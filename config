@@ -1,0 +1,55 @@
+[DEFAULT]
+# ASE Repetition Time
+tr = 3.0
+
+# ASE Inversion Time
+ti = 1.21
+
+# ASE Echo Time
+te = 0.074
+
+# tau range
+tau_start = -0.016
+tau_end = 0.065
+tau_step = 0.008
+
+# Magnetitic Susceptibility Difference
+dchi = 2.64e-7
+
+# Proton Gyromagnetic Ratio
+gamma = 2.67513e8
+
+# Field Strength
+b0 = 3.0
+
+# Blood T1 Relaxation Time
+t1b = 1.58
+
+# Tissue R2 Relaxation Rate
+r2t = 11.5
+
+# Characteristic Diffusion Time
+td = 3.755555555
+
+# Spin Density
+nb = 0.775
+
+# Haematocrit
+hct = 0.34
+
+# S0 Constant
+s0 = 100
+
+# Signal to Noise Ratio
+snr = 10
+
+# OEF Range
+oef_start = 0.05
+oef_end = 0.75
+
+# DBV Range
+dbv_start = 0.004
+dbv_end = 0.1
+
+# OEF/DBV Sample Size
+sample_size = 50
