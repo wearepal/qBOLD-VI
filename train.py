@@ -13,7 +13,8 @@ def create_model():
     model.add(keras.layers.Dense(18, input_shape=(11,), activation='relu'))
     for i in range(2):
         model.add(keras.layers.Dense(18, activation='relu'))
-    model.add(keras.layers.Dense(4, activation='sigmoid'))
+    # Removed sigmoid
+    model.add(keras.layers.Dense(4))
     return model
 
 
