@@ -13,8 +13,19 @@ def create_model():
     model.add(keras.layers.Dense(18, input_shape=(11,), activation='relu'))
     for i in range(2):
         model.add(keras.layers.Dense(18, activation='relu'))
-    model.add(keras.layers.Dense(2, activation='sigmoid'))
+    model.add(keras.layers.Dense(4, activation='sigmoid'))
     return model
+
+
+def loss_fn(y_true, y_pred):
+    loss = []
+
+    oef_nll = -tf.math.log((1 / (y_pred[:, 1] / 2)) * tf.math.exp((-1 / 2) * ((y_true[:, 0] - y_pred[:, 0]) / (y_pred[:, 1] / 2))**2))
+    dbv_nll = -tf.math.log((1 / (y_pred[:, 3] / 2)) * tf.math.exp((-1 / 2) * ((y_true[:,1] - y_pred[:, 2]) / (y_pred[:, 3] / 2))**2))
+
+    nll = tf.add(oef_nll, dbv_nll)
+
+    return tf.reduce_mean(nll)
 
 
 if __name__ == '__main__':
@@ -40,7 +51,7 @@ if __name__ == '__main__':
     model = create_model()
     optimiser = tf.keras.optimizers.Adam()
 
-    model.compile(optimiser, loss='mse')
+    model.compile(optimiser, loss=loss_fn)
 
     es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, verbose=1)
     mc = tf.keras.callbacks.ModelCheckpoint('model.h5', monitor='val_loss', verbose=1)
