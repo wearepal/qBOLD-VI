@@ -18,8 +18,12 @@ def create_model():
 
 
 def loss_fn(y_true, y_pred):
-    oef_nll = -(-tf.math.log(y_pred[:, 1]/2) - (1/2)*((y_true[:, 0]-y_pred[:, 0])/tf.math.sqrt(y_pred[:, 1]))**2)
-    dbv_nll = -(-tf.math.log(y_pred[:, 3]/2) - (1/2)*((y_true[:, 1]-y_pred[:, 2])/tf.math.sqrt(y_pred[:, 3]))**2)
+    oef_mean = y_pred[:, 0]
+    oef_log_std = y_pred[:, 1]
+    dbv_mean = y_pred[:, 2]
+    dbv_log_std = y_pred[:, 3]
+    oef_nll = -(-oef_log_std - (1/2)*((y_true[:, 0]-oef_mean)/tf.exp(oef_log_std))**2)
+    dbv_nll = -(-dbv_log_std - (1/2)*((y_true[:, 1]-dbv_mean)/tf.exp(dbv_log_std))**2)
 
     nll = tf.add(oef_nll, dbv_nll)
 
