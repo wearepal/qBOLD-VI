@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     x = np.genfromtxt(args.s, delimiter=',')
 
-    model = tf.keras.models.load_model('model.h5', compile=False)
+    model = tf.keras.models.load_model('model.h5')
 
     predictions = model.predict(x)
 
