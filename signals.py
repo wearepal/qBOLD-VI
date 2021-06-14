@@ -80,7 +80,7 @@ class SignalGenerationLayer(keras.layers.Layer):
     def calc_tissue(self, oef, dbv):
         def integral(y, x):
             dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
-            return tf.reduce_sum(tf.where(tf.math.is_nan(y[:-1]), tf.zeros_like(y[:-1]), y[:-1])) * dx
+            return tf.reduce_sum(tf.where(tf.math.is_nan(y[:, :-1]), tf.zeros_like(y[:, :-1]), y[:, :-1]), axis=1) * dx
 
         dw = (4 / 3) * np.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
         tc = 1 / dw
@@ -96,14 +96,12 @@ class SignalGenerationLayer(keras.layers.Layer):
             x = tf.linspace(a, b, 2**5+1)
 
             for i, dw_i in enumerate(dw):
-                for j, tau in enumerate(self._taus):
+                s = integral((2 + x) * tf.math.sqrt(1 - x) *
+                             (1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * x)) / (x ** 2), x)
 
-                    s = integral((2 + x) * tf.math.sqrt(1 - x) *
-                                 (1 - tf.math.special.bessel_j0(1.5 * (tau * dw_i) * x)) / (x ** 2), x)
-
-                    s = tf.math.exp(-dbv[i] * s / 3)
-                    s *= np.exp(-self._te * self._r2t)
-                    signals[i][j] = s
+                s = tf.math.exp(-dbv[i] * s / 3)
+                s *= np.exp(-self._te * self._r2t)
+                signals[i] = s
         else:
             # Calculate the signals in both regimes and then sum and multiply by their validity. Although
             # this seems wasteful, but it's much easier to parallelise
