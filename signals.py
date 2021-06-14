@@ -78,23 +78,32 @@ class SignalGenerationLayer(keras.layers.Layer):
         return signal
 
     def calc_tissue(self, oef, dbv):
+        def integral(y, x):
+            dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
+            return tf.reduce_sum(tf.where(tf.math.is_nan(y[:-1]), tf.zeros_like(y[:-1]), y[:-1])) * dx
+
         dw = (4 / 3) * np.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
         tc = 1 / dw
         r2p = dw * dbv
 
         if self._full_model:
             # TODO: Implement the full model
-            # Tensorflow has some solvers https://www.tensorflow.org/probability/api_docs/python/tfp/math/ode
-            # some experimentation might be required
-            """
-            s = integrate.quad(lambda u: (2 + u) * np.sqrt(1 - u) *
-                                             (1 - special.jv(0, 1.5 * (tau * dw) * u)) / (u ** 2), 0, 1)[0]
 
-                s = np.exp(-dbv * s / 3)
-                s *= np.exp(-self._te * self._r2t)
-                signals[i] = s
-            """
-            raise NotImplementedError()
+            signals = np.zeros((oef.shape[0], self._taus.size))
+
+            a = tf.constant(0, dtype=tf.float32)
+            b = tf.constant(1, dtype=tf.float32)
+            x = tf.linspace(a, b, 2**5+1)
+
+            for i, dw_i in enumerate(dw):
+                for j, tau in enumerate(self._taus):
+
+                    s = integral((2 + x) * tf.math.sqrt(1 - x) *
+                                 (1 - tf.math.special.bessel_j0(1.5 * (tau * dw_i) * x)) / (x ** 2), x)
+
+                    s = tf.math.exp(-dbv[i] * s / 3)
+                    s *= np.exp(-self._te * self._r2t)
+                    signals[i][j] = s
         else:
             # Calculate the signals in both regimes and then sum and multiply by their validity. Although
             # this seems wasteful, but it's much easier to parallelise
@@ -225,7 +234,9 @@ def test_layer_matches_python(f, b):
     signal = sig_layer(test_oef_dbv)
     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
 
-    assert (abs(tf.keras.backend.mean(signal[0]-signal2)) < 1e-4), "Predictions are above epislon different"
+    error = abs(tf.keras.backend.mean(signal[0]-signal2))
+
+    assert (error < 1e-4), "Predictions are above epislon different"
 
 
 if __name__ == '__main__':
