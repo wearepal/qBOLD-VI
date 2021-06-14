@@ -7,9 +7,99 @@ from tqdm import tqdm
 
 import scipy.integrate as integrate
 import scipy.special as special
+import tensorflow as tf
+keras = tf.keras
+
+
+class SignalGenerationLayer(keras.layers.Layer):
+    """
+    Encapsulate all the signal generation code into a Keras layer
+    """
+    def __init__(self, system_parameters, full_model, include_blood):
+        """
+        Create a signal generation layer based on the forward equations from OEF/DBV
+        :param system_parameters: A dictionary contain the model system parameters
+        :param full_model: boolean, do we use the full or log-linear model
+        :param include_blood: boolean: do we include the contribution of blood
+        """
+
+        # TODO: Are any of these parameters something we might want to infer from data?
+        self._gamma = float(system_parameters['gamma'])
+        self._b0 = float(system_parameters['b0'])
+        self._dchi = float(system_parameters['dchi'])
+        self._hct = float(system_parameters['hct'])
+        self._te = float(system_parameters['te'])
+        self._r2t = float(system_parameters['r2t'])
+        self._taus = np.arange(float(system_parameters['tau_start']), float(system_parameters['tau_end']),
+                               float(system_parameters['tau_step']), dtype=np.float32)
+
+        self._full_model = full_model
+        self._include_blood = include_blood
+
+        super().__init__()
+
+    def call(self, input, *args, **kwargs):
+        """
+        Override the base class call method. This calculate the predicted signal (without added noise)
+        given the input OEF/DBV
+        :param inputs: a tensor of any shape, where the final dimension has size 2 to represent the OEF/DBV
+        :return: The predicted signal
+        """
+        assert input.shape[-1] == 2, 'Input should have 2 elements in last dimension, OEF and DBV'
+        # Store the original shape, ignoring the last two dimensions
+        original_shape = input.shape[:-1]
+        # Flatten the inputs except the last axis
+        reshaped_input = tf.reshape(input, (-1, 2))
+        # Assume oef and dbv are the only elements of the last axis
+        oef, dbv = tf.split(reshaped_input, 2, axis=-1)
+
+
+        tissue_signal = self.calc_tissue(oef, dbv)
+        # TODO: implement the other parts of the signal model
+
+        signal = tissue_signal
+        # The predicted signal should have the original shape with len(self.taus)
+        signal = tf.reshape(signal, original_shape+(len(self._taus,)))
+        return signal
+
+    def calc_tissue(self, oef, dbv):
+        dw = (4 / 3) * np.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
+        tc = 1 / dw
+        r2p = dw * dbv
+
+        if self._full_model:
+            # TODO: Implement the full model
+            # Tensorflow has some solvers https://www.tensorflow.org/probability/api_docs/python/tfp/math/ode
+            # some experimentation might be required
+            """
+            s = integrate.quad(lambda u: (2 + u) * np.sqrt(1 - u) *
+                                             (1 - special.jv(0, 1.5 * (tau * dw) * u)) / (u ** 2), 0, 1)[0]
+
+                s = np.exp(-dbv * s / 3)
+                s *= np.exp(-self._te * self._r2t)
+                signals[i] = s
+            """
+            raise NotImplementedError()
+        else:
+            # Calculate the signals in both regimes and then sum and multiply by their validity. Although
+            # this seems wasteful, but it's much easier to parallelise
+
+            taus_under_tc = abs(self._taus) < tc
+            taus_over_tc = taus_under_tc == False
+
+            taus_under_tc = tf.cast(taus_under_tc, tf.float32)
+            taus_over_tc = tf.cast(taus_over_tc, tf.float32)
+
+            s = tf.exp(-self._r2t * self._te) * tf.exp(- (0.3 * (r2p * self._taus) ** 2) / dbv)
+            s2 = tf.exp(-self._r2t * self._te) * tf.exp(dbv - (r2p * tf.abs(self._taus)))
+
+            signals = s * taus_under_tc + s2 * taus_over_tc
+
+        return signals
 
 
 def calc_tissue(params, full, oef, dbv):
+    taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
     gamma = float(params['gamma'])
     b0 = float(params['b0'])
     dchi = float(params['dchi'])
@@ -91,7 +181,30 @@ def generate_signal(params, full, include_blood, oef, dbv):
     return s0 * (tissue_weight * tissue_signal + blood_weight * blood_signal)
 
 
+def test_layer_matches_python():
+    config = configparser.ConfigParser()
+    config.read('config')
+    params = config['DEFAULT']
+
+    sig_layer = SignalGenerationLayer(params, False, False)
+
+    test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
+    test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+
+    test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
+
+    # TODO: Make the test cover all the variants (blood/ fully model)
+    # Current the model only considers the tissue contribution
+    signal = sig_layer(test_oef_dbv)
+    signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
+
+    assert (tf.keras.backend.mean(signal[0]-signal2) < 1e-4), "Predictions are above epislon different"
+
+
+
 if __name__ == '__main__':
+    test_layer_matches_python()
+
 
     config = configparser.ConfigParser()
     config.read('config')
