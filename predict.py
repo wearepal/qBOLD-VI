@@ -27,4 +27,7 @@ if __name__ == '__main__':
 
     predictions = model.predict(x)
 
+    predictions[:, 1] = tf.math.exp(predictions[:, 1])
+    predictions[:, 3] = tf.math.exp(predictions[:, 3])
+
     np.savetxt('predictions.csv', predictions, delimiter=',')
