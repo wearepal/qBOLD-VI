@@ -33,6 +33,10 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._taus = np.arange(float(system_parameters['tau_start']), float(system_parameters['tau_end']),
                                float(system_parameters['tau_step']), dtype=np.float32)
 
+        self._tr = float(system_parameters['tr'])
+        self._ti = float(system_parameters['ti'])
+        self._t1b = float(system_parameters['t1b'])
+
         self._full_model = full_model
         self._include_blood = include_blood
 
@@ -53,11 +57,22 @@ class SignalGenerationLayer(keras.layers.Layer):
         # Assume oef and dbv are the only elements of the last axis
         oef, dbv = tf.split(reshaped_input, 2, axis=-1)
 
-
         tissue_signal = self.calc_tissue(oef, dbv)
-        # TODO: implement the other parts of the signal model
+        blood_signal = tf.zeros_like(tissue_signal)
 
-        signal = tissue_signal
+        if self._include_blood:
+            nb = 0.775
+            m_bld = 1 - (2 - np.exp(- (self._tr - self._ti) / self._t1b)) * np.exp(-self._ti / self._t1b)
+            vb = dbv
+
+            blood_weight = m_bld * nb * vb
+            blood_signal = self.calc_blood(oef)
+        else:
+            blood_weight = dbv
+
+        tissue_weight = 1 - blood_weight
+
+        signal = tissue_weight * tissue_signal + blood_weight * blood_signal
         # The predicted signal should have the original shape with len(self.taus)
         signal = tf.reshape(signal, original_shape+(len(self._taus,)))
         return signal
@@ -94,6 +109,18 @@ class SignalGenerationLayer(keras.layers.Layer):
             s2 = tf.exp(-self._r2t * self._te) * tf.exp(dbv - (r2p * tf.abs(self._taus)))
 
             signals = s * taus_under_tc + s2 * taus_over_tc
+
+        return signals
+
+    def calc_blood(self, oef):
+        r2b = 4.5 + 16.4 * self._hct + (165.2 * self._hct + 55.7) * oef ** 2
+        td = 0.0045067
+        g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0) ** 2)
+
+        signals = np.exp(-r2b * self._te) * np.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
+                                                ((self._te / td) + np.sqrt(0.25 + (self._te / td)) + 1.5 -
+                                                 (2 * np.sqrt(0.25 + (((self._te + self._taus) ** 2) / td))) -
+                                                 (2 * np.sqrt(0.25 + (((self._te - self._taus) ** 2) / td)))))
 
         return signals
 
@@ -181,12 +208,12 @@ def generate_signal(params, full, include_blood, oef, dbv):
     return s0 * (tissue_weight * tissue_signal + blood_weight * blood_signal)
 
 
-def test_layer_matches_python():
+def test_layer_matches_python(f, b):
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
 
-    sig_layer = SignalGenerationLayer(params, False, False)
+    sig_layer = SignalGenerationLayer(params, f, b)
 
     test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
     test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
@@ -198,14 +225,10 @@ def test_layer_matches_python():
     signal = sig_layer(test_oef_dbv)
     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
 
-    assert (tf.keras.backend.mean(signal[0]-signal2) < 1e-4), "Predictions are above epislon different"
-
+    assert (abs(tf.keras.backend.mean(signal[0]-signal2)) < 1e-4), "Predictions are above epislon different"
 
 
 if __name__ == '__main__':
-    test_layer_matches_python()
-
-
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
@@ -221,6 +244,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    if args.f not in ['True', 'False'] or args.b not in ['True', 'False']:
+        raise ValueError('Arguments must be a valid boolean')
+
+    test_layer_matches_python(args.f == 'True', args.b == 'True')
+
     taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
 
     snr = float(params['snr'])
@@ -230,7 +258,7 @@ if __name__ == '__main__':
     train_y = np.array(np.meshgrid(oefs, dbvs)).T.reshape(-1, 2)
     train_x = np.zeros((oefs.size * dbvs.size, taus.size))
     for i, [oef, dbv] in enumerate(tqdm(train_y)):
-        train_x[i] = generate_signal(params, args.f, args.b, oef, dbv)
+        train_x[i] = generate_signal(params, args.f == 'True', args.b == 'True', oef, dbv)
 
         se = train_x[i][np.where(taus == 0)]
         train_x[i] /= se
