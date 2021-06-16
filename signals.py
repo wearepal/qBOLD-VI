@@ -81,6 +81,11 @@ class SignalGenerationLayer(keras.layers.Layer):
         return signal
 
     def calc_tissue(self, oef, dbv):
+        def compose(i):
+            return tf.math.exp(-dbv[i] * integral((2 + x) * tf.math.sqrt(1 - x) * (
+                        1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[i]) * x)) / (x ** 2),
+                                                  x) / 3) * tf.math.exp(-self._te * self._r2t)
+
         def integral(y, x):
             dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
             return tf.reduce_sum(tf.where(tf.math.is_nan(y[:, :-1]), tf.zeros_like(y[:, :-1]), y[:, :-1]), axis=1) * dx
@@ -90,20 +95,11 @@ class SignalGenerationLayer(keras.layers.Layer):
         r2p = dw * dbv
 
         if self._full_model:
-            signals = np.zeros((oef.shape[0], self._taus.shape[0]))
-
             a = tf.constant(0, dtype=tf.float32)
             b = tf.constant(1, dtype=tf.float32)
             x = tf.linspace(a, b, 2 ** 5 + 1)
 
-            for i, dw_i in enumerate(dw):
-                s = integral((2 + x) * tf.math.sqrt(1 - x) *
-                             (1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * x)) / (
-                                         x ** 2), x)
-
-                s = tf.math.exp(-dbv[i] * s / 3)
-                s *= tf.math.exp(-self._te * self._r2t)
-                signals[i] = s
+            signals = tf.vectorized_map(compose, tf.range(dw.shape[0]))
         else:
             # Calculate the signals in both regimes and then sum and multiply by their validity. Although
             # this seems wasteful, but it's much easier to parallelise
@@ -227,8 +223,8 @@ def test_layer_matches_python(f, b):
 
     sig_layer = SignalGenerationLayer(params, f, b)
 
-    test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-    test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+    test_oef = tf.random.uniform((100,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
+    test_dbv = tf.random.uniform((100,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
 
     test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
 
