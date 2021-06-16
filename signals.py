@@ -18,7 +18,7 @@ class SignalGenerationLayer(keras.layers.Layer):
     Encapsulate all the signal generation code into a Keras layer
     """
 
-    def __init__(self, system_parameters, full_model, include_blood):
+    def __init__(self, system_parameters, full_model, include_blood, simulate_noise=False):
         """
         Create a signal generation layer based on the forward equations from OEF/DBV
         :param system_parameters: A dictionary contain the model system parameters
@@ -42,6 +42,7 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         self._full_model = full_model
         self._include_blood = include_blood
+        self._simulate_noise = simulate_noise
         self._snr = int(system_parameters['snr'])
 
         super().__init__()
@@ -82,24 +83,39 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
 
-        noise_weights = tf.math.sqrt(2*tf.range(1, self._taus.shape[0]+1)/self._taus.shape[0])
-        noise_weights = tf.cast(tf.expand_dims(noise_weights, 0), tf.float32)
+        if self._simulate_noise:
+            noise_weights = tf.math.sqrt(2*tf.range(1, self._taus.shape[0]+1)/self._taus.shape[0])  # calculate weightings for noise varying over tau
+            noise_weights = tf.cast(tf.expand_dims(noise_weights, 0), tf.float32)
 
-        stdd = abs(tf.math.reduce_mean(signal, axis=1)) / self._snr
-        stdd = tf.repeat(tf.expand_dims(stdd, 1), 11, axis=1)
-        noise = tf.random.normal(signal.shape, tf.zeros(signal.shape), stdd, tf.float32)
+            stdd = abs(tf.math.reduce_mean(signal, axis=1)) / self._snr  # calculate standard deviation for each signal
+            stdd = tf.repeat(tf.expand_dims(stdd, 1), 11, axis=1)
+            noise = tf.random.normal(signal.shape, tf.zeros(signal.shape), stdd, tf.float32)
 
-        signal += noise * noise_weights
+            signal += noise * noise_weights  # add noise to each signal weighted on tau values
 
         return signal
 
     def calc_tissue(self, oef, dbv):
-        def compose(i):
-            return tf.math.exp(-dbv[i] * integral((2 + x) * tf.math.sqrt(1 - x) * (
-                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[i]) * x)) / (x ** 2),
-                                                  x) / 3) * tf.math.exp(-self._te * self._r2t)
+        """
+        :param oef: A tensor containing the oef value of each parameter pair
+        :param dbv: A tensor containing the dbv value of each parameter pair
+        :return: The signal contribution from brain tissue
+        """
+        def compose(signal_idx):
+            """
+            :param signal_idx: The index for signal to calculate
+            :return: The signal for the given index calculated using the full model
+            """
+            return tf.math.exp(-dbv[signal_idx] * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
+                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[signal_idx]) * int_parts)) / (int_parts ** 2),
+                                                           int_parts) / 3) * tf.math.exp(-self._te * self._r2t)
 
         def integral(y, x):
+            """
+            :param y: The y values for the sections between integral limits
+            :param x: The x values of each section
+            :return: The riemann integral used to calculate a full model signal
+            """
             dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
             return tf.reduce_sum(tf.where(tf.math.is_nan(y[:, :-1]), tf.zeros_like(y[:, :-1]), y[:, :-1]), axis=1) * dx
 
@@ -108,9 +124,9 @@ class SignalGenerationLayer(keras.layers.Layer):
         r2p = dw * dbv
 
         if self._full_model:
-            a = tf.constant(0, dtype=tf.float32)
-            b = tf.constant(1, dtype=tf.float32)
-            x = tf.linspace(a, b, 2 ** 5 + 1)
+            a = tf.constant(0, dtype=tf.float32)  # lower limit for integration
+            b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
+            int_parts = tf.linspace(a, b, 2 ** 5 + 1)  # riemann integral uses sum of many x values within limit to make estimate
 
             signals = tf.vectorized_map(compose, tf.range(dw.shape[0]))
         else:
@@ -131,6 +147,10 @@ class SignalGenerationLayer(keras.layers.Layer):
         return signals
 
     def calc_blood(self, oef):
+        """
+        :param oef: A tensor containing the the oef values from each parameter pair
+        :return: The signal contribution from venous blood
+        """
         r2b = 4.5 + 16.4 * self._hct + (165.2 * self._hct + 55.7) * oef ** 2
         td = 0.0045067
         g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0) ** 2)
