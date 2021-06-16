@@ -42,6 +42,7 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         self._full_model = full_model
         self._include_blood = include_blood
+        self._snr = int(system_parameters['snr'])
 
         super().__init__()
 
@@ -80,6 +81,15 @@ class SignalGenerationLayer(keras.layers.Layer):
         signal = tf.reshape(signal, original_shape + (len(self._taus, )))
 
         signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
+
+        noise_weights = tf.math.sqrt(2*tf.range(1, self._taus.shape[0]+1)/self._taus.shape[0])
+        noise_weights = tf.cast(tf.expand_dims(noise_weights, 0), tf.float32)
+
+        stdd = abs(tf.math.reduce_mean(signal, axis=1)) / self._snr
+        stdd = tf.repeat(tf.expand_dims(stdd, 1), 11, axis=1)
+        noise = tf.random.normal(signal.shape, tf.zeros(signal.shape), stdd, tf.float32)
+
+        signal += noise * noise_weights
 
         return signal
 
@@ -135,113 +145,115 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         return signals
 
+# Original code used for generating signals before implementing tf layer
+# def calc_tissue(params, full, oef, dbv):
+#     taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
+#     gamma = float(params['gamma'])
+#     b0 = float(params['b0'])
+#     dchi = float(params['dchi'])
+#     hct = float(params['hct'])
+#     te = float(params['te'])
+#     r2t = float(params['r2t'])
+#
+#     dw = (4 / 3) * np.pi * gamma * b0 * dchi * hct * oef
+#     tc = 1 / dw
+#     r2p = dw * dbv
+#
+#     signals = np.zeros_like(taus)
+#
+#     for i, tau in enumerate(taus):
+#         if full:
+#             s = integrate.quad(lambda u: (2 + u) * np.sqrt(1 - u) *
+#                                          (1 - special.jv(0, 1.5 * (tau * dw) * u)) / (u ** 2), 0, 1)[0]
+#
+#             s = np.exp(-dbv * s / 3)
+#             s *= np.exp(-te * r2t)
+#             signals[i] = s
+#         else:
+#             if abs(tau) < tc:
+#                 s = np.exp(-r2t * te) * np.exp(- (0.3 * (r2p * tau) ** 2) / dbv)
+#             else:
+#                 s = np.exp(-r2t * te) * np.exp(dbv - (r2p * abs(tau)))
+#             signals[i] = s
+#
+#     return signals
+#
+#
+# def calc_blood(params, oef):
+#     hct = float(params['hct'])
+#     dchi = float(params['dchi'])
+#     b0 = float(params['b0'])
+#     te = float(params['te'])
+#     gamma = float(params['gamma'])
+#
+#     r2b = 4.5 + 16.4 * hct + (165.2 * hct + 55.7) * oef ** 2
+#
+#     td = 0.0045067
+#     g0 = (4 / 45) * hct * (1 - hct) * ((dchi * b0) ** 2)
+#
+#     signals = np.zeros_like(taus)
+#
+#     for i, tau in enumerate(taus):
+#         signals[i] = np.exp(-r2b * te) * np.exp(- (0.5 * (gamma ** 2) * g0 * (td ** 2)) *
+#                                                 ((te / td) + np.sqrt(0.25 + (te / td)) + 1.5 -
+#                                                  (2 * np.sqrt(0.25 + (((te + taus[i]) ** 2) / td))) -
+#                                                  (2 * np.sqrt(0.25 + (((te - taus[i]) ** 2) / td)))))
+#
+#     return signals
+#
+#
+# def generate_signal(params, full, include_blood, oef, dbv):
+#     tissue_signal = calc_tissue(params, full, oef, dbv)
+#     blood_signal = 0
+#
+#     tr = float(params['tr'])
+#     ti = float(params['ti'])
+#     t1b = float(params['t1b'])
+#     s0 = int(params['s0'])
+#
+#     if include_blood:
+#         nb = 0.775
+#
+#         m_bld = 1 - (2 - np.exp(- (tr - ti) / t1b)) * np.exp(-ti / t1b)
+#
+#         vb = dbv
+#
+#         blood_weight = m_bld * nb * vb
+#         tissue_weight = 1 - blood_weight
+#
+#         blood_signal = calc_blood(params, oef)
+#     else:
+#         blood_weight = dbv
+#         tissue_weight = 1 - blood_weight
+#
+#     return s0 * (tissue_weight * tissue_signal + blood_weight * blood_signal)
 
-def calc_tissue(params, full, oef, dbv):
-    taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
-    gamma = float(params['gamma'])
-    b0 = float(params['b0'])
-    dchi = float(params['dchi'])
-    hct = float(params['hct'])
-    te = float(params['te'])
-    r2t = float(params['r2t'])
-
-    dw = (4 / 3) * np.pi * gamma * b0 * dchi * hct * oef
-    tc = 1 / dw
-    r2p = dw * dbv
-
-    signals = np.zeros_like(taus)
-
-    for i, tau in enumerate(taus):
-        if full:
-            s = integrate.quad(lambda u: (2 + u) * np.sqrt(1 - u) *
-                                         (1 - special.jv(0, 1.5 * (tau * dw) * u)) / (u ** 2), 0, 1)[0]
-
-            s = np.exp(-dbv * s / 3)
-            s *= np.exp(-te * r2t)
-            signals[i] = s
-        else:
-            if abs(tau) < tc:
-                s = np.exp(-r2t * te) * np.exp(- (0.3 * (r2p * tau) ** 2) / dbv)
-            else:
-                s = np.exp(-r2t * te) * np.exp(dbv - (r2p * abs(tau)))
-            signals[i] = s
-
-    return signals
-
-
-def calc_blood(params, oef):
-    hct = float(params['hct'])
-    dchi = float(params['dchi'])
-    b0 = float(params['b0'])
-    te = float(params['te'])
-    gamma = float(params['gamma'])
-
-    r2b = 4.5 + 16.4 * hct + (165.2 * hct + 55.7) * oef ** 2
-
-    td = 0.0045067
-    g0 = (4 / 45) * hct * (1 - hct) * ((dchi * b0) ** 2)
-
-    signals = np.zeros_like(taus)
-
-    for i, tau in enumerate(taus):
-        signals[i] = np.exp(-r2b * te) * np.exp(- (0.5 * (gamma ** 2) * g0 * (td ** 2)) *
-                                                ((te / td) + np.sqrt(0.25 + (te / td)) + 1.5 -
-                                                 (2 * np.sqrt(0.25 + (((te + taus[i]) ** 2) / td))) -
-                                                 (2 * np.sqrt(0.25 + (((te - taus[i]) ** 2) / td)))))
-
-    return signals
-
-
-def generate_signal(params, full, include_blood, oef, dbv):
-    tissue_signal = calc_tissue(params, full, oef, dbv)
-    blood_signal = 0
-
-    tr = float(params['tr'])
-    ti = float(params['ti'])
-    t1b = float(params['t1b'])
-    s0 = int(params['s0'])
-
-    if include_blood:
-        nb = 0.775
-
-        m_bld = 1 - (2 - np.exp(- (tr - ti) / t1b)) * np.exp(-ti / t1b)
-
-        vb = dbv
-
-        blood_weight = m_bld * nb * vb
-        tissue_weight = 1 - blood_weight
-
-        blood_signal = calc_blood(params, oef)
-    else:
-        blood_weight = dbv
-        tissue_weight = 1 - blood_weight
-
-    return s0 * (tissue_weight * tissue_signal + blood_weight * blood_signal)
-
-
-def test_layer_matches_python(f, b):
-    config = configparser.ConfigParser()
-    config.read('config')
-    params = config['DEFAULT']
-
-    sig_layer = SignalGenerationLayer(params, f, b)
-
-    test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-    test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
-
-    test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
-
-    signal = sig_layer(test_oef_dbv)
-
-    signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
-    signal2 = np.log(signal2/signal2[2])
-
-    stdd = abs(signal2.mean()) / int(params['snr'])
-    signal2 += np.random.normal(0, stdd, signal2.size)
-
-    error = abs(tf.keras.backend.mean(signal[0] - signal2))
-
-    assert (error < 1e-4), "Predictions are above epislon different"
+# Tester function for monitoring difference between original signal generation and new tf layer
+# def test_layer_matches_python(f, b):
+#     config = configparser.ConfigParser()
+#     config.read('config')
+#     params = config['DEFAULT']
+#
+#     sig_layer = SignalGenerationLayer(params, f, b)
+#
+#     test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
+#     test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+#
+#     test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
+#
+#     signal = sig_layer(test_oef_dbv)
+#
+#     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
+#     signal2 = np.log(signal2/signal2[2])
+#
+#     noise_weights = np.sqrt([2*i/11 for i in range(1, 12)])
+#
+#     stdd = abs(signal2.mean()) / int(params['snr'])
+#     signal2 += np.random.normal(0, stdd, signal2.size)*noise_weights
+#
+#     error = abs(tf.keras.backend.mean(signal[0] - signal2))
+#
+#     assert (error < 1e-4), "Predictions are above epislon different"
 
 
 if __name__ == '__main__':
@@ -263,28 +275,35 @@ if __name__ == '__main__':
     if args.f not in ['True', 'False'] or args.b not in ['True', 'False']:
         raise ValueError('Arguments must be a valid boolean')
 
-    test_layer_matches_python(args.f == 'True', args.b == 'True')
+    # Original code for handling signal generation via script
+    # taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
+    #
+    # snr = float(params['snr'])
+    #
+    # oefs = np.linspace(float(params['oef_start']), float(params['oef_end']), int(params['sample_size']))
+    # dbvs = np.linspace(float(params['dbv_start']), float(params['dbv_end']), int(params['sample_size']))
+    # train_y = np.array(np.meshgrid(oefs, dbvs)).T.reshape(-1, 2)
+    # train_x = np.zeros((oefs.size * dbvs.size, taus.size))
+    # for i, [oef, dbv] in enumerate(tqdm(train_y)):
+    #     train_x[i] = generate_signal(params, args.f == 'True', args.b == 'True', oef, dbv)
+    #
+    #     se = train_x[i][np.where(taus == 0)]
+    #     train_x[i] /= se
+    #     train_x[i] = np.log(train_x[i])
+    #
+    #     stdd = abs(train_x[i].mean()) / snr
+    #     train_x[i] += np.random.normal(0, stdd, train_x[i].size)
 
-    taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
+    sig_layer = SignalGenerationLayer(params, args.f, args.b)
 
-    snr = float(params['snr'])
+    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']), maxval=float(params['oef_end']))
+    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+    xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
+    train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
+    train_x = sig_layer(train_y)
 
-    oefs = np.linspace(float(params['oef_start']), float(params['oef_end']), int(params['sample_size']))
-    dbvs = np.linspace(float(params['dbv_start']), float(params['dbv_end']), int(params['sample_size']))
-    train_y = np.array(np.meshgrid(oefs, dbvs)).T.reshape(-1, 2)
-    train_x = np.zeros((oefs.size * dbvs.size, taus.size))
-    for i, [oef, dbv] in enumerate(tqdm(train_y)):
-        train_x[i] = generate_signal(params, args.f == 'True', args.b == 'True', oef, dbv)
-
-        se = train_x[i][np.where(taus == 0)]
-        train_x[i] /= se
-        train_x[i] = np.log(train_x[i])
-
-        stdd = abs(train_x[i].mean()) / snr
-        train_x[i] += np.random.normal(0, stdd, train_x[i].size)
-
-    train = np.hstack((train_x, train_y))
-    np.random.shuffle(train)
+    train = tf.concat([train_x, train_y], -1)
+    train = tf.random.shuffle(train)
     train_x = train[:, :11]
     train_y = train[:, 11:]
 
