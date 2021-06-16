@@ -78,12 +78,15 @@ class SignalGenerationLayer(keras.layers.Layer):
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
         # The predicted signal should have the original shape with len(self.taus)
         signal = tf.reshape(signal, original_shape + (len(self._taus, )))
+
+        signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
+
         return signal
 
     def calc_tissue(self, oef, dbv):
         def compose(i):
             return tf.math.exp(-dbv[i] * integral((2 + x) * tf.math.sqrt(1 - x) * (
-                        1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[i]) * x)) / (x ** 2),
+                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[i]) * x)) / (x ** 2),
                                                   x) / 3) * tf.math.exp(-self._te * self._r2t)
 
         def integral(y, x):
@@ -223,13 +226,18 @@ def test_layer_matches_python(f, b):
 
     sig_layer = SignalGenerationLayer(params, f, b)
 
-    test_oef = tf.random.uniform((100,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-    test_dbv = tf.random.uniform((100,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+    test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
+    test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
 
     test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
 
     signal = sig_layer(test_oef_dbv)
+
     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
+    signal2 = np.log(signal2/signal2[2])
+
+    stdd = abs(signal2.mean()) / int(params['snr'])
+    signal2 += np.random.normal(0, stdd, signal2.size)
 
     error = abs(tf.keras.backend.mean(signal[0] - signal2))
 
