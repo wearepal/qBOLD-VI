@@ -40,7 +40,9 @@ hct = 0.34
 # S0 Constant
 s0 = 100
 
-# Signal to Noise Ratio
+# Noise Simulation
+simulate_noise=True
+tau_weighted=False
 snr = 10
 
 # OEF Range
