@@ -18,7 +18,7 @@ class SignalGenerationLayer(keras.layers.Layer):
     Encapsulate all the signal generation code into a Keras layer
     """
 
-    def __init__(self, system_parameters, full_model, include_blood, simulate_noise=False):
+    def __init__(self, system_parameters, full_model, include_blood):
         """
         Create a signal generation layer based on the forward equations from OEF/DBV
         :param system_parameters: A dictionary contain the model system parameters
@@ -40,10 +40,12 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._ti = float(system_parameters['ti'])
         self._t1b = float(system_parameters['t1b'])
 
+        self._simulate_noise = system_parameters['simulate_noise'] == 'True'
+        self._weighted_noise = system_parameters['tau_weighted'] == 'True'
+        self._snr = int(system_parameters['snr'])
+
         self._full_model = full_model
         self._include_blood = include_blood
-        self._simulate_noise = simulate_noise
-        self._snr = int(system_parameters['snr'])
 
         super().__init__()
 
@@ -84,8 +86,11 @@ class SignalGenerationLayer(keras.layers.Layer):
         signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
 
         if self._simulate_noise:
-            noise_weights = tf.math.sqrt(2*tf.range(1, self._taus.shape[0]+1)/self._taus.shape[0])  # calculate weightings for noise varying over tau
-            noise_weights = tf.cast(tf.expand_dims(noise_weights, 0), tf.float32)
+            if self._weighted_noise:
+                noise_weights = tf.math.sqrt(2*tf.range(1, self._taus.shape[0]+1)/self._taus.shape[0])  # calculate weightings for noise varying over tau
+                noise_weights = tf.cast(tf.expand_dims(noise_weights, 0), tf.float32)
+            else:
+                noise_weights = 1
 
             stdd = abs(tf.math.reduce_mean(signal, axis=1)) / self._snr  # calculate standard deviation for each signal
             stdd = tf.repeat(tf.expand_dims(stdd, 1), 11, axis=1)
