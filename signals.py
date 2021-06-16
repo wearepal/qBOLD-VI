@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 
 import numpy as np
 import argparse
@@ -8,6 +9,7 @@ from tqdm import tqdm
 import scipy.integrate as integrate
 import scipy.special as special
 import tensorflow as tf
+
 keras = tf.keras
 
 
@@ -15,6 +17,7 @@ class SignalGenerationLayer(keras.layers.Layer):
     """
     Encapsulate all the signal generation code into a Keras layer
     """
+
     def __init__(self, system_parameters, full_model, include_blood):
         """
         Create a signal generation layer based on the forward equations from OEF/DBV
@@ -30,8 +33,8 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._hct = float(system_parameters['hct'])
         self._te = float(system_parameters['te'])
         self._r2t = float(system_parameters['r2t'])
-        self._taus = np.arange(float(system_parameters['tau_start']), float(system_parameters['tau_end']),
-                               float(system_parameters['tau_step']), dtype=np.float32)
+        self._taus = tf.range(float(system_parameters['tau_start']), float(system_parameters['tau_end']),
+                              float(system_parameters['tau_step']), dtype=tf.float32)
 
         self._tr = float(system_parameters['tr'])
         self._ti = float(system_parameters['ti'])
@@ -62,7 +65,7 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         if self._include_blood:
             nb = 0.775
-            m_bld = 1 - (2 - np.exp(- (self._tr - self._ti) / self._t1b)) * np.exp(-self._ti / self._t1b)
+            m_bld = 1 - (2 - tf.math.exp(- (self._tr - self._ti) / self._t1b)) * tf.math.exp(-self._ti / self._t1b)
             vb = dbv
 
             blood_weight = m_bld * nb * vb
@@ -74,7 +77,7 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
         # The predicted signal should have the original shape with len(self.taus)
-        signal = tf.reshape(signal, original_shape+(len(self._taus,)))
+        signal = tf.reshape(signal, original_shape + (len(self._taus, )))
         return signal
 
     def calc_tissue(self, oef, dbv):
@@ -82,25 +85,24 @@ class SignalGenerationLayer(keras.layers.Layer):
             dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
             return tf.reduce_sum(tf.where(tf.math.is_nan(y[:, :-1]), tf.zeros_like(y[:, :-1]), y[:, :-1]), axis=1) * dx
 
-        dw = (4 / 3) * np.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
+        dw = (4 / 3) * math.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
         tc = 1 / dw
         r2p = dw * dbv
 
         if self._full_model:
-            # TODO: Implement the full model
-
-            signals = np.zeros((oef.shape[0], self._taus.size))
+            signals = np.zeros((oef.shape[0], self._taus.shape[0]))
 
             a = tf.constant(0, dtype=tf.float32)
             b = tf.constant(1, dtype=tf.float32)
-            x = tf.linspace(a, b, 2**5+1)
+            x = tf.linspace(a, b, 2 ** 5 + 1)
 
             for i, dw_i in enumerate(dw):
                 s = integral((2 + x) * tf.math.sqrt(1 - x) *
-                             (1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * x)) / (x ** 2), x)
+                             (1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * x)) / (
+                                         x ** 2), x)
 
                 s = tf.math.exp(-dbv[i] * s / 3)
-                s *= np.exp(-self._te * self._r2t)
+                s *= tf.math.exp(-self._te * self._r2t)
                 signals[i] = s
         else:
             # Calculate the signals in both regimes and then sum and multiply by their validity. Although
@@ -124,10 +126,13 @@ class SignalGenerationLayer(keras.layers.Layer):
         td = 0.0045067
         g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0) ** 2)
 
-        signals = np.exp(-r2b * self._te) * np.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
-                                                ((self._te / td) + np.sqrt(0.25 + (self._te / td)) + 1.5 -
-                                                 (2 * np.sqrt(0.25 + (((self._te + self._taus) ** 2) / td))) -
-                                                 (2 * np.sqrt(0.25 + (((self._te - self._taus) ** 2) / td)))))
+        signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
+                                                             ((self._te / td) + tf.math.sqrt(
+                                                                 0.25 + (self._te / td)) + 1.5 -
+                                                              (2 * tf.math.sqrt(
+                                                                  0.25 + (((self._te + self._taus) ** 2) / td))) -
+                                                              (2 * tf.math.sqrt(
+                                                                  0.25 + (((self._te - self._taus) ** 2) / td)))))
 
         return signals
 
@@ -227,12 +232,10 @@ def test_layer_matches_python(f, b):
 
     test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
 
-    # TODO: Make the test cover all the variants (blood/ fully model)
-    # Current the model only considers the tissue contribution
     signal = sig_layer(test_oef_dbv)
     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
 
-    error = abs(tf.keras.backend.mean(signal[0]-signal2))
+    error = abs(tf.keras.backend.mean(signal[0] - signal2))
 
     assert (error < 1e-4), "Predictions are above epislon different"
 
