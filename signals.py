@@ -80,8 +80,6 @@ class SignalGenerationLayer(keras.layers.Layer):
         tissue_weight = 1 - blood_weight
 
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
-        # The predicted signal should have the original shape with len(self.taus)
-        signal = tf.reshape(signal, original_shape + (len(self._taus, )))
 
         # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
         signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
@@ -98,6 +96,9 @@ class SignalGenerationLayer(keras.layers.Layer):
             noise = tf.random.normal(signal.shape, tf.zeros(signal.shape), stdd, tf.float32)
 
             signal += noise * noise_weights  # add noise to each signal weighted on tau values
+
+        # The predicted signal should have the original shape with len(self.taus)
+        signal = tf.reshape(signal, original_shape + (len(self._taus, )))
 
         return signal
 
