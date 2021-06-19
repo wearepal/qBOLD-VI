@@ -42,7 +42,7 @@ s0 = 100
 
 # Noise Simulation
 simulate_noise=True
-tau_weighted=False
+tau_weighted=True
 snr = 10
 
 # OEF Range

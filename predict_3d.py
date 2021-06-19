@@ -35,7 +35,7 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    x = np.genfromtxt(args.s, delimiter=',')
+    x = np.load(args.s)
 
     trained_model = keras.models.load_model('model.h5', compile=False)
     weights = trained_model.trainable_variables
@@ -59,12 +59,11 @@ if __name__ == '__main__':
     optimiser = tf.keras.optimizers.Adam()
     model.compile(optimiser, loss=loss_fn)
 
-    x = x.reshape((x.shape[0], 1, 1, 1, x.shape[1]))
+    x = tf.expand_dims(x, 0)
 
     predictions = model.predict(x)
-    predictions = predictions.reshape((x.shape[0], 4))
 
-    predictions[:, 1] = tf.math.exp(predictions[:, 1])
-    predictions[:, 3] = tf.math.exp(predictions[:, 3])
+    predictions[-1][1] = tf.math.exp(predictions[-1][1])
+    predictions[-1][3] = tf.math.exp(predictions[-1][3])
 
-    np.savetxt('predictions.csv', predictions, delimiter=',')
+    np.save('predictions', predictions)
