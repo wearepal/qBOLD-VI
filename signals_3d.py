@@ -10,7 +10,7 @@ import tensorflow as tf
 keras = tf.keras
 
 
-class SignalGenerationLayer3D(keras.layers.Layer):
+class SignalGenerationLayer(keras.layers.Layer):
     """
     Encapsulate all the signal generation code into a Keras layer
     """
@@ -95,7 +95,6 @@ class SignalGenerationLayer3D(keras.layers.Layer):
             signal += noise * noise_weights  # add noise to each signal weighted on tau values
 
         # The predicted signal should have the original shape with len(self.taus)
-        # TODO: Reshaping fixed in 3d version, needs to be fixed again in normal (should reshape after applying noise)
         signal = tf.reshape(signal, original_shape + (len(self._taus, )))
 
         return signal
@@ -190,11 +189,14 @@ if __name__ == '__main__':
     if args.f not in ['True', 'False'] or args.b not in ['True', 'False']:
         raise ValueError('Arguments must be a valid boolean')
 
-    sig_layer = SignalGenerationLayer3D(params, args.f, args.b)
+    sig_layer = SignalGenerationLayer(params, args.f, args.b)
 
+    batch = 5
     shape = (68, 68, 68)
     radius = 20
     position = (34, 34, 34)
+
+    # Lines 201 through 210 generated a sphere represented as 0s and 1s to roughly produce brain shape
 
     semisizes = (radius,) * 3
 
@@ -207,17 +209,22 @@ if __name__ == '__main__':
 
     sphere = (arr <= 1.0).astype(int)
 
-    oefs = tf.random.normal(shape, 0.3, 0.054, tf.float32) * sphere
-    dbvs = tf.random.normal(shape, 0.04, 0.019, tf.float32) * sphere
+    train_y = np.zeros((5, *shape, 2))
 
-    train_y = tf.stack([oefs, dbvs], axis=3)
+    for i in range(batch):
+        # Only voxels in the sphere have params, others are zero then set to nan
+        oefs = tf.random.normal(shape, 0.3, 0.054, tf.float32) * sphere
+        dbvs = tf.random.normal(shape, 0.04, 0.019, tf.float32) * sphere
+
+        train_y[i] = tf.stack([oefs, dbvs], axis=3)
+
     train_y = tf.where(tf.equal(train_y, 0), tf.fill(train_y.shape, float('NaN')), train_y)
     train_x = sig_layer(train_y)
 
     train = tf.concat([train_x, train_y], -1)
     train = tf.random.shuffle(train)
-    train_x = train[:, :, :, :11]
-    train_y = train[:, :, :, 11:]
+    train_x = train[:, :, :, :, :11]
+    train_y = train[:, :, :, :, 11:]
 
     np.save('signals', train_x)
     np.save('params', train_y)
