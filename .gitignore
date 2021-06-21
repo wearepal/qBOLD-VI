@@ -1,0 +1,10 @@
+
+.idea/vcs.xml
+.idea/qBOLD-Kit.iml
+.idea/modules.xml
+.idea/misc.xml
+.idea/inspectionProfiles/profiles_settings.xml
+.DS_Store
+params.csv
+signals.csv
+*.h5
