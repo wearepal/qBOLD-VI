@@ -55,7 +55,7 @@ class ReparamTrickLayer(keras.layers.Layer):
             input[:, :, :, :, 3])
 
         samples = tf.stack([oef_sample, dbv_sample], -1)
-        samples = tf.abs(samples) + 1e-2
+        samples = tf.clip_by_value(samples, clip_value_min=1e-3, clip_value_max=0.99)
         return samples
 
 
@@ -121,7 +121,7 @@ if __name__ == '__main__':
     es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, verbose=1)
     mc = tf.keras.callbacks.ModelCheckpoint('model.h5', monitor='val_loss', verbose=1)
 
-    model.fit(x, y, epochs=1, callbacks=[es, mc], validation_split=0.2, batch_size=8)
+    model.fit(x, y, epochs=10, callbacks=[es, mc], validation_split=0.2, batch_size=8)
 
     # Load real data for fine-tuning
     real_data = np.load('/Users/is321/Documents/Data/qBold/hyperv_data/hyperv_ase.npy')
