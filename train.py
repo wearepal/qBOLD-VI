@@ -53,19 +53,16 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
 
-    parser.add_argument('-s',
-                        required=True,
-                        help='path to signals file')
-    parser.add_argument('-p',
-                        required=True,
-                        help='path to parameters file')
+    parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
 
     args = parser.parse_args()
 
-    x = np.genfromtxt(args.s, delimiter=',')
-    y = np.genfromtxt(args.p, delimiter=',')
+    data_file = np.load(args.f)
+    x = data_file['x']
+    y = data_file['y']
 
     train_conv = True
+    # If we're building a convolutional model, reshape the synthetic data to look like single voxel images
     if train_conv:
         x = np.reshape(x, (-1, 1, 1, 1, 11))
         y = np.reshape(y, (-1, 1, 1, 1, 2))
