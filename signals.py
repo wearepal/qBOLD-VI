@@ -80,8 +80,6 @@ class SignalGenerationLayer(keras.layers.Layer):
         tissue_weight = 1 - blood_weight
 
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
-        # The predicted signal should have the original shape with len(self.taus)
-        signal = tf.reshape(signal, original_shape + (len(self._taus, )))
 
         # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
         signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
@@ -98,6 +96,9 @@ class SignalGenerationLayer(keras.layers.Layer):
             noise = tf.random.normal(signal.shape, tf.zeros(signal.shape), stdd, tf.float32)
 
             signal += noise * noise_weights  # add noise to each signal weighted on tau values
+
+        # The predicted signal should have the original shape with len(self.taus)
+        signal = tf.reshape(signal, original_shape + (len(self._taus, )))
 
         return signal
 
@@ -301,37 +302,17 @@ if __name__ == '__main__':
     if args.f not in ['True', 'False'] or args.b not in ['True', 'False']:
         raise ValueError('Arguments must be a valid boolean')
 
-    # Original code for handling signal generation via script
-    # taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
-    #
-    # snr = float(params['snr'])
-    #
-    # oefs = np.linspace(float(params['oef_start']), float(params['oef_end']), int(params['sample_size']))
-    # dbvs = np.linspace(float(params['dbv_start']), float(params['dbv_end']), int(params['sample_size']))
-    # train_y = np.array(np.meshgrid(oefs, dbvs)).T.reshape(-1, 2)
-    # train_x = np.zeros((oefs.size * dbvs.size, taus.size))
-    # for i, [oef, dbv] in enumerate(tqdm(train_y)):
-    #     train_x[i] = generate_signal(params, args.f == 'True', args.b == 'True', oef, dbv)
-    #
-    #     se = train_x[i][np.where(taus == 0)]
-    #     train_x[i] /= se
-    #     train_x[i] = np.log(train_x[i])
-    #
-    #     stdd = abs(train_x[i].mean()) / snr
-    #     train_x[i] += np.random.normal(0, stdd, train_x[i].size)
-
     sig_layer = SignalGenerationLayer(params, args.f, args.b)
 
+
+    # oefs = tf.random.normal(shape, 0.3, 0.054, tf.float32)
+    # dbvs = tf.random.normal(shape, 0.04, 0.019, tf.float32)
     oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']), maxval=float(params['oef_end']))
     dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
     train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
+    # Remove any ordering from the data
+    train_y = tf.random.shuffle(train_y)
     train_x = sig_layer(train_y)
 
-    train = tf.concat([train_x, train_y], -1)
-    train = tf.random.shuffle(train)
-    train_x = train[:, :11]
-    train_y = train[:, 11:]
-
-    np.savetxt('signals.csv', train_x, delimiter=',')
-    np.savetxt('params.csv', train_y, delimiter=',')
+    np.savez('synthetic_data', x=train_x, y=train_y)
