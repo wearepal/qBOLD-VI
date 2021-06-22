@@ -46,6 +46,23 @@ def loss_fn(y_true, y_pred):
     return tf.reduce_mean(nll)
 
 
+def crop_3d():
+    crop_size = 20
+
+    train_x = np.zeros((x.shape[0], crop_size, crop_size, crop_size, x.shape[-1]))
+    train_y = np.zeros((y.shape[0], crop_size, crop_size, crop_size, y.shape[-1]))
+
+    for i in range(x.shape[0]):
+        # Generate the starting point for croppings
+        crop = tf.random.uniform([3], 0, x.shape[1] - crop_size,
+                                 dtype=tf.int32)  # TODO: this will break when dimensions not equal
+        cropper = keras.layers.Cropping3D(
+            cropping=tuple(
+                (crop[i], x.shape[1] - (crop[i] + crop_size)) for i in range(3)))  # Produces crop_size shaped croppings
+        train_x[i] = cropper(tf.expand_dims(x[i], 0))
+        train_y[i] = cropper(tf.expand_dims(y[i], 0))
+
+
 if __name__ == '__main__':
     config = configparser.ConfigParser()
     config.read('config')
