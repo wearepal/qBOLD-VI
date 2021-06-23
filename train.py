@@ -30,17 +30,26 @@ def create_model(use_conv=False):
     return model
 
 
+def forward_transform(logit):
+    return tf.nn.sigmoid(logit)
+
+
+def backwards_transform(signal):
+    return tf.math.log(signal/(1.0-signal))
+
+
 def loss_fn(y_true, y_pred):
     # Reshape the data such that we can work with either volumes or single voxels
     y_true = tf.reshape(y_true, (-1, 2))
+    y_true = backwards_transform(y_true)
     y_pred = tf.reshape(y_pred, (-1, 4))
 
     oef_mean = y_pred[:, 0]
     oef_log_std = y_pred[:, 1]
     dbv_mean = y_pred[:, 2]
     dbv_log_std = y_pred[:, 3]
-    oef_nll = -(-oef_log_std - (1 / 2) * ((y_true[:, 0] - oef_mean) / tf.exp(oef_log_std)) ** 2)
-    dbv_nll = -(-dbv_log_std - (1 / 2) * ((y_true[:, 1] - dbv_mean) / tf.exp(dbv_log_std)) ** 2)
+    oef_nll = -(-oef_log_std - (1.0 / 2.0) * ((y_true[:, 0] - oef_mean) / tf.exp(oef_log_std)) ** 2)
+    dbv_nll = -(-dbv_log_std - (1.0 / 2.0) * ((y_true[:, 1] - dbv_mean) / tf.exp(dbv_log_std)) ** 2)
 
     nll = tf.add(oef_nll, dbv_nll)
 
@@ -55,6 +64,7 @@ class ReparamTrickLayer(keras.layers.Layer):
             input[:, :, :, :, 3])
 
         samples = tf.stack([oef_sample, dbv_sample], -1)
+        samples = forward_transform(samples)
         samples = tf.clip_by_value(samples, clip_value_min=1e-3, clip_value_max=0.99)
         return samples
 
@@ -92,6 +102,18 @@ def prepare_dataset(real_data):
     real_dataset = real_dataset.repeat(-1)
     return real_dataset
 
+def save_predictions(model, data, filename):
+    import nibabel as nib
+
+    data = tf.where(data[:, :, :, -1:] > 0, tf.math.log(data[:, :, :, :-1] / data[:, :, :, 2:3]),
+             tf.zeros_like(data[:, :, :, :-1]))
+    predictions = forward_transform(model.predict(data[:, :, :, :, :-1]))
+    images = np.split(predictions[:,:,:,:,:], data.shape[0], axis=0)
+    images = np.squeeze(np.concatenate(images, axis=-1),0)
+    affine = np.eye(4)
+    array_img = nib.Nifti1Image(images, affine)
+    nib.save(array_img, filename)
+
 
 if __name__ == '__main__':
     config = configparser.ConfigParser()
@@ -121,7 +143,7 @@ if __name__ == '__main__':
     es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, verbose=1)
     mc = tf.keras.callbacks.ModelCheckpoint('model.h5', monitor='val_loss', verbose=1)
 
-    model.fit(x, y, epochs=10, callbacks=[es, mc], validation_split=0.2, batch_size=8)
+    model.fit(x, y, epochs=30, callbacks=[es, mc], validation_split=0.2, batch_size=8)
 
     # Load real data for fine-tuning
     real_data = np.load('/Users/is321/Documents/Data/qBold/hyperv_data/hyperv_ase.npy')
@@ -131,6 +153,7 @@ if __name__ == '__main__':
     print(valid_data.shape)
     valid_dataset = prepare_dataset(valid_data)
 
+    save_predictions(model, valid_data, 'after_pt')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=1e-4)
     full_model = keras.Sequential()
@@ -141,4 +164,8 @@ if __name__ == '__main__':
     full_model.add(SignalGenerationLayer(params, False, True))
 
     full_model.compile(full_optimiser, loss=fine_tune_loss_fn)
-    full_model.fit(real_dataset, validation_data=valid_dataset, steps_per_epoch=100, epochs=100, validation_steps=1)
+    full_model.fit(real_dataset, validation_data=valid_dataset, steps_per_epoch=100, epochs=10, validation_steps=1)
+    save_predictions(model, valid_data, 'after_ft')
+
+
+
