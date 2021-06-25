@@ -85,16 +85,17 @@ class SignalGenerationLayer(keras.layers.Layer):
             # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
             norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
-            snr = tf.random.uniform((signal.shape[0],1), 40, 120) * tf.reshape(norm_snr, (1, 11))
+            snr = tf.random.uniform((signal.shape[0],1), 5, 120) * tf.reshape(norm_snr, (1, 11))
             # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
             std_dev = tf.reduce_mean(signal, 0, keepdims=True)/snr
             # Add noise at the correct level
             signal = signal + tf.random.normal(signal.shape)*std_dev
 
+        """
         # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
         tau_zero_data = signal[:, tf.where(self._taus == 0)[0][0]]
-
         signal = tf.math.log(signal/tf.expand_dims(tau_zero_data, 1))
+        """"
 
         # The predicted signal should have the original shape with len(self.taus)
         new_shape = original_shape.as_list() + [len(self._taus)]
