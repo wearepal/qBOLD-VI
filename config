@@ -47,11 +47,11 @@ snr = 10
 
 # OEF Range
 oef_start = 0.05
-oef_end = 0.75
+oef_end = 0.8
 
 # DBV Range
-dbv_start = 0.004
-dbv_end = 0.1
+dbv_start = 0.002
+dbv_end = 0.2
 
 # OEF/DBV Sample Size
-sample_size = 50
+sample_size = 1000
