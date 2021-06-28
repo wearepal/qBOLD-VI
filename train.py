@@ -17,10 +17,13 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
             return keras.layers.Dense(_no_units, activation=activation)
 
     def normalise_data(_data):
+        # Do the normalisation as part of the model
         orig_shape = tf.shape(_data)
         _data = tf.reshape(_data, (-1, 11))
         _data = tf.clip_by_value(_data, 1e-2, 1e8)
+        # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
         _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
+        # Take the logarithm
         _data = tf.math.log(_data)
         _data = tf.reshape(_data, orig_shape)
         return _data
@@ -35,6 +38,7 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
     net = keras.layers.Lambda(normalise_data)(net)
 
     def add_normalizer(_net):
+        # Possibly add dropout and a normalization layer, depending on the dropout_rate and use_layer_norm values
         import tensorflow_addons as tfa
         if dropout_rate > 0.0:
             _net = keras.layers.Dropout(dropout_rate)(_net)
@@ -42,28 +46,31 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
             _net = tfa.layers.GroupNormalization(groups=1, axis=-1)(_net)
         return _net
 
-    if system_constants is not None:
-        const_net = keras.layers.Dense(no_units)(system_constants)
-
+    # Create the initial layer
     net = create_layer(no_units)(net)
     net = add_normalizer(net)
-    if system_constants is not None and i == 0:
+
+    # If we passed in the system constants, we can apply a dense layer to then multiply them with the network
+    if system_constants is not None:
+        const_net = keras.layers.Dense(no_units)(system_constants)
         net = keras.layers.Multiply()([net, keras.layers.Reshape((1, 1, 1, -1))(const_net)])
 
+    # Add extra layers
     for i in range(1):
         net = add_normalizer(net)
         net = create_layer(no_units)(net)
 
     net = add_normalizer(net)
+    # Create the penultimate layer, leaving net available for more processing
     net_penultimate = create_layer(no_units)(net)
 
     if use_conv:
         # Add a second output that uses 3x3x3 convs
-        ki = tf.keras.initializers.GlorotNormal()
-        second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 3), activation='gelu', padding='same',
+        ki = tf.keras.initializers.TruncatedNormal(stddev=0.05) #GlorotNormal()
+        second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), activation='gelu', padding='same',
                                          kernel_initializer=ki)(net)
         second_net = add_normalizer(second_net)
-        second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 3), activation='gelu', padding='same',
+        second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), activation='gelu', padding='same',
                                          kernel_initializer=ki)(second_net)
 
         # Add this to the penultimate output from the 1x1x1 network
@@ -78,10 +85,12 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
     # Create another output that also looks at neighbourhoods
     second_net = final_layer(second_net)
 
+    # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
     return keras.Model(inputs=[input], outputs=[output, second_net])
 
 
 def forward_transform(logit):
+    # Define the forward transform of the predicted parameters to OEF/DBV
     oef, dbv = tf.split(logit, 2, -1)
     oef = tf.nn.sigmoid(oef) * 0.8
     dbv = tf.nn.sigmoid(dbv) * 0.3
@@ -95,6 +104,7 @@ def logit(signal):
 
 
 def backwards_transform(signal):
+    # Define how to backwards transform OEF/DBV to the same parameterisation used by the NN
     oef, dbv = tf.split(signal, 2, -1)
     oef = logit(oef / 0.8)
     dbv = logit(dbv / 0.3)
@@ -105,6 +115,7 @@ def backwards_transform(signal):
 def loss_fn(y_true, y_pred):
     # Reshape the data such that we can work with either volumes or single voxels
     y_true = tf.reshape(y_true, (-1, 2))
+    # Backwards transform the true values (so we can define our distribution in the parameter space)
     y_true = backwards_transform(y_true)
     y_pred = tf.reshape(y_pred, (-1, 4))
 
@@ -112,6 +123,7 @@ def loss_fn(y_true, y_pred):
     oef_log_std = y_pred[:, 1]
     dbv_mean = y_pred[:, 2]
     dbv_log_std = y_pred[:, 3]
+    # Gaussian negative log likelihoods
     oef_nll = -(-oef_log_std - (1.0 / 2.0) * ((y_true[:, 0] - oef_mean) / tf.exp(oef_log_std)) ** 2)
     dbv_nll = -(-dbv_log_std - (1.0 / 2.0) * ((y_true[:, 1] - dbv_mean) / tf.exp(dbv_log_std)) ** 2)
 
@@ -169,15 +181,18 @@ def fine_tune_loss_fn(y_true, y_pred, student_t_df=None, sigma=0.08):
     """
     import tensorflow_probability as tfp
     mask = y_true[:, :, :, :, -1:]
+    # Normalise and mask the predictions/real data
     y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
     y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
     y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
     y_pred = tf.where(mask > 0, tf.math.log(y_pred), tf.zeros_like(y_pred))
 
+    # Calculate the residual difference between our normalised data
     residual = y_true[:, :, :, :, :-1] - y_pred
     residual = tf.reshape(residual, (-1, 11))
     mask = tf.reshape(mask, (-1, 1))
 
+    # Optionally use a student-t distribution (with heavy tails) or a Gaussian distribution
     if student_t_df is not None:
         dist = tfp.distributions.StudentT(df=student_t_df, loc=0.0, scale=sigma)
         nll = -dist.log_prob(residual)
@@ -191,6 +206,7 @@ def fine_tune_loss_fn(y_true, y_pred, student_t_df=None, sigma=0.08):
 
 
 def kl_loss(true, predicted):
+    # Calculate the kullback-leibler divergence between the posterior and prior distibutions
     q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(predicted, 4, -1)
     p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, mask = tf.split(true, 5, -1)
 
@@ -201,6 +217,7 @@ def kl_loss(true, predicted):
 
     kl_oef = kl(q_oef_mean, q_oef_log_std, p_oef_mean, p_oef_log_std)
     kl_dbv = kl(q_dbv_mean, q_dbv_log_std, p_dbv_mean, p_dbv_log_std)
+    # Mask the KL
     kl_op = (kl_oef + kl_dbv) * mask
     kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
     # keras.backend.print_tensor(kl_op)
@@ -225,6 +242,7 @@ def get_constants(params):
 
 
 def smoothness_loss(true_params, pred_params):
+    # Define a total variation smoothness term for the predicted means
     q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(pred_params, 4, -1)
     pred_params = tf.concat([q_oef_mean, q_dbv_mean], -1)
 
@@ -304,16 +322,16 @@ if __name__ == '__main__':
 
     no_units = 20
     kl_weight = 1.0
-    smoothness_weight = 5.0
+    smoothness_weight = 0.5
     # Switching to None will use a Gaussian error distribution
     student_t_df = None
     dropout_rate = 0.0
     use_layer_norm = False
     use_system_constants = False
-    no_pt_epochs = 20
-    no_ft_epochs = 20
+    no_pt_epochs = 50
+    no_ft_epochs = 50
     pt_lr = 1e-3
-    ft_lr = 1e-4
+    ft_lr = 1e-3
     im_loss_sigma = 0.08
 
     data_file = np.load(args.f)
@@ -361,6 +379,9 @@ if __name__ == '__main__':
 
     valid_dataset = prepare_dataset(valid_data, model)
 
+    combined_data = np.concatenate([real_data, valid_data],axis=0)
+    combined_dataset = prepare_dataset(combined_data, model)
+
     save_predictions(model, valid_data, 'after_pt_baseline')
     save_predictions(model, real_data, 'after_pt_hyperv')
 
@@ -386,7 +407,7 @@ if __name__ == '__main__':
                                                                                   sigma=im_loss_sigma),
                              'predictions': predictions_loss},
                        metrics={'predictions': [smoothness_loss, kl_loss]})
-    full_model.fit(valid_dataset, validation_data=valid_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
+    full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
                    validation_steps=1)
     save_predictions(model, valid_data, 'after_ft_baseline', use_first_op=False)
     save_predictions(model, real_data, 'after_ft_hyperv', use_first_op=False)
