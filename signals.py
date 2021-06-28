@@ -81,24 +81,27 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
 
-        # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
-        signal = tf.math.log(signal/tf.expand_dims(signal[:, tf.where(self._taus == 0)[0][0]], 1))
-
         if self._simulate_noise:
-            if self._weighted_noise:
-                noise_weights = tf.math.sqrt(2*tf.range(1, self._taus.shape[0]+1)/self._taus.shape[0])  # calculate weightings for noise varying over tau
-                noise_weights = tf.cast(tf.expand_dims(noise_weights, 0), tf.float32)
-            else:
-                noise_weights = 1
+            # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
+            norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
+            # The actual SNR varies between 60-120, but I've increased the range for more diversity
+            snr = tf.random.uniform((signal.shape[0],1), 5, 120) * tf.reshape(norm_snr, (1, 11))
+            # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
+            std_dev = tf.reduce_mean(signal, 0, keepdims=True)/snr
+            # Add noise at the correct level
+            signal = signal + tf.random.normal(signal.shape)*std_dev
 
-            stdd = abs(tf.math.reduce_mean(signal, axis=1)) / self._snr  # calculate standard deviation for each signal
-            stdd = tf.repeat(tf.expand_dims(stdd, 1), 11, axis=1)
-            noise = tf.random.normal(signal.shape, tf.zeros(signal.shape), stdd, tf.float32)
-
-            signal += noise * noise_weights  # add noise to each signal weighted on tau values
+        """
+        # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
+        tau_zero_data = signal[:, tf.where(self._taus == 0)[0][0]]
+        signal = tf.math.log(signal/tf.expand_dims(tau_zero_data, 1))
+        """
 
         # The predicted signal should have the original shape with len(self.taus)
-        signal = tf.reshape(signal, original_shape + (len(self._taus, )))
+        new_shape = original_shape.as_list() + [len(self._taus)]
+        # Set the first value of new_shape to -1 (in case we have an unknown batch size)
+        new_shape[0] = -1
+        signal = tf.reshape(signal, new_shape)
 
         return signal
 
@@ -304,9 +307,6 @@ if __name__ == '__main__':
 
     sig_layer = SignalGenerationLayer(params, args.f, args.b)
 
-
-    # oefs = tf.random.normal(shape, 0.3, 0.054, tf.float32)
-    # dbvs = tf.random.normal(shape, 0.04, 0.019, tf.float32)
     oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']), maxval=float(params['oef_end']))
     dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
