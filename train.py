@@ -408,21 +408,17 @@ if __name__ == '__main__':
     model.fit(synthetic_dataset, epochs=no_pt_epochs, callbacks=[mc], validation_data=(valid_x, valid_y))
 
     # Load real data for fine-tuning
-    real_data = np.load(f'{args.d}/hyperv_ase.npy')
-    real_dataset = prepare_dataset(real_data, model)
+    hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
+    baseline_data = np.load(f'{args.d}/baseline_ase.npy')
 
-    valid_data = np.load(f'{args.d}/baseline_ase.npy')
-
-    valid_dataset = prepare_dataset(valid_data, model)
-
-    combined_data = np.concatenate([real_data, valid_data], axis=0)
+    combined_data = np.concatenate([hyperv_data, baseline_data], axis=0)
     combined_dataset = prepare_dataset(combined_data, model)
 
     if not os.path.exists('pt'):
         os.makedirs('pt')
 
-    save_predictions(model, valid_data, 'pt/baseline')
-    save_predictions(model, real_data, 'pt/hyperv')
+    save_predictions(model, baseline_data, 'pt/baseline')
+    save_predictions(model, hyperv_data, 'pt/hyperv')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=ft_lr)
     input_3d = keras.layers.Input((20, 20, 8, 11))
@@ -447,5 +443,5 @@ if __name__ == '__main__':
                        metrics={'predictions': [smoothness_loss, kl_loss]})
     full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
                    validation_steps=1)
-    save_predictions(model, valid_data, 'baseline', use_first_op=False)
-    save_predictions(model, real_data, 'hyperv', use_first_op=False)
+    save_predictions(model, baseline_data, 'baseline', use_first_op=False)
+    save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)
