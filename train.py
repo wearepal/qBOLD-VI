@@ -66,7 +66,7 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
 
     if use_conv:
         # Add a second output that uses 3x3x3 convs
-        ki = tf.keras.initializers.TruncatedNormal(stddev=0.05) #GlorotNormal()
+        ki = tf.keras.initializers.TruncatedNormal(stddev=0.05)  # GlorotNormal()
         second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), activation='gelu', padding='same',
                                          kernel_initializer=ki)(net)
         second_net = add_normalizer(second_net)
@@ -302,12 +302,24 @@ def save_predictions(model, data, filename, use_first_op=True):
     predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
     if use_first_op is False:
         predictions = predictions2
+
+
+    # Extract the OEF and DBV
+    predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
     predictions = forward_transform(predictions)
-    images = np.split(predictions, data.shape[0], axis=0)
-    images = np.squeeze(np.concatenate(images, axis=-1), 0)
-    affine = np.eye(4)
-    array_img = nib.Nifti1Image(images, affine)
-    nib.save(array_img, filename)
+
+    log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
+
+    def save_im_data(im_data, _filename):
+        images = np.split(im_data, data.shape[0], axis=0)
+        images = np.squeeze(np.concatenate(images, axis=-1), 0)
+        affine = np.eye(4)
+        array_img = nib.Nifti1Image(images, affine)
+        nib.save(array_img, _filename)
+
+    save_im_data(predictions[:, :, :, :, 0:1], filename + '_oef')
+    save_im_data(predictions[:, :, :, :, 1:2], filename + '_dbv')
+    save_im_data(log_stds, filename + '_logstds')
 
 
 if __name__ == '__main__':
@@ -379,11 +391,11 @@ if __name__ == '__main__':
 
     valid_dataset = prepare_dataset(valid_data, model)
 
-    combined_data = np.concatenate([real_data, valid_data],axis=0)
+    combined_data = np.concatenate([real_data, valid_data], axis=0)
     combined_dataset = prepare_dataset(combined_data, model)
 
-    save_predictions(model, valid_data, 'after_pt_baseline')
-    save_predictions(model, real_data, 'after_pt_hyperv')
+    save_predictions(model, valid_data, 'pt/baseline')
+    save_predictions(model, real_data, 'pt/hyperv')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=ft_lr)
     input_3d = keras.layers.Input((20, 20, 8, 11))
@@ -397,7 +409,6 @@ if __name__ == '__main__':
     full_model = keras.Model(inputs=[input_3d],
                              outputs={'predictions': predicted_distribution, 'predicted_images': output})
 
-
     def predictions_loss(t, p):
         return kl_loss(t, p) * kl_weight + smoothness_loss(t, p) * smoothness_weight
 
@@ -409,5 +420,5 @@ if __name__ == '__main__':
                        metrics={'predictions': [smoothness_loss, kl_loss]})
     full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
                    validation_steps=1)
-    save_predictions(model, valid_data, 'after_ft_baseline', use_first_op=False)
-    save_predictions(model, real_data, 'after_ft_hyperv', use_first_op=False)
+    save_predictions(model, valid_data, 'baseline', use_first_op=False)
+    save_predictions(model, real_data, 'hyperv', use_first_op=False)
