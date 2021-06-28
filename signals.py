@@ -95,7 +95,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
         tau_zero_data = signal[:, tf.where(self._taus == 0)[0][0]]
         signal = tf.math.log(signal/tf.expand_dims(tau_zero_data, 1))
-        """"
+        """
 
         # The predicted signal should have the original shape with len(self.taus)
         new_shape = original_shape.as_list() + [len(self._taus)]
