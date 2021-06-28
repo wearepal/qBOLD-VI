@@ -9,7 +9,16 @@ import argparse
 import configparser
 
 
-def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_norm=False, dropout_rate=0.0):
+def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_norm=False, dropout_rate=0.0,
+                 no_intermediate_layers=1):
+    """
+    @param: use_conv (Boolean) : whether to use a convolution (1x1x1) or MLP model
+    @params: system_constants (array): If not None, perform a dense transformation and multiply with first level representation
+    @params: no_units (unsigned int): The number of units for each level of the network
+    @params: use_layer_norm (Boolean) : Perform layer normalisation
+    @params: dropout_rate (float, 0-1) : perform dropout
+    @params: no_intermediate layers (unsigned int) : the number of extra layers apart from the first and last
+    """
     def create_layer(_no_units, activation='gelu'):
         if use_conv:
             return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), activation=activation)
@@ -55,8 +64,8 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
         const_net = keras.layers.Dense(no_units)(system_constants)
         net = keras.layers.Multiply()([net, keras.layers.Reshape((1, 1, 1, -1))(const_net)])
 
-    # Add extra layers
-    for i in range(1):
+    # Add intermediate layers layers
+    for i in range(no_intermediate_layers):
         net = add_normalizer(net)
         net = create_layer(no_units)(net)
 
@@ -303,19 +312,21 @@ def save_predictions(model, data, filename, use_first_op=True):
     if use_first_op is False:
         predictions = predictions2
 
+    # Get the log stds, but don't transform them. Their meaning is complicated because of the forward transformation
+    log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
 
-    # Extract the OEF and DBV
+    # Extract the OEF and DBV and transform them
     predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
     predictions = forward_transform(predictions)
 
-    log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
+
 
     def save_im_data(im_data, _filename):
         images = np.split(im_data, data.shape[0], axis=0)
         images = np.squeeze(np.concatenate(images, axis=-1), 0)
         affine = np.eye(4)
         array_img = nib.Nifti1Image(images, affine)
-        nib.save(array_img, _filename)
+        nib.save(array_img, _filename+'.nii.gz')
 
     save_im_data(predictions[:, :, :, :, 0:1], filename + '_oef')
     save_im_data(predictions[:, :, :, :, 1:2], filename + '_dbv')
@@ -333,7 +344,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     no_units = 20
-    kl_weight = 1.0
+    kl_weight = 0.5
     smoothness_weight = 0.5
     # Switching to None will use a Gaussian error distribution
     student_t_df = None
@@ -345,6 +356,7 @@ if __name__ == '__main__':
     pt_lr = 1e-3
     ft_lr = 1e-3
     im_loss_sigma = 0.08
+    no_intermediate_layers = 1
 
     data_file = np.load(args.f)
     x = data_file['x']
@@ -354,13 +366,18 @@ if __name__ == '__main__':
     # If we're building a convolutional model, reshape the synthetic data to look like images, note we only do
     # 1x1x1 convs for pre-training
     if train_conv:
+        # Reshape to being more image like for layer normalisation (if we use this)
         x = np.reshape(x, (-1, 10, 10, 5, 11))
         y = np.reshape(y, (-1, 10, 10, 5, 2))
 
-    train_x = x[:-50, ...]
-    train_y = y[:-50, ...]
-    valid_x = x[-50:, ...]
-    valid_y = y[-50:, ...]
+    # Separate into training/testing data
+    # Keep 10% for validation
+    no_examples = x.shape[0]
+    no_valid_examples = no_examples//10
+    train_x = x[:-no_valid_examples, ...]
+    train_y = y[:-no_valid_examples, ...]
+    valid_x = x[-no_valid_examples:, ...]
+    valid_y = y[-no_valid_examples:, ...]
 
     synthetic_dataset = tf.data.Dataset.from_tensor_slices((train_x, train_y))
 
@@ -375,10 +392,11 @@ if __name__ == '__main__':
         system_constants = None
 
     model = create_model(use_conv=train_conv, no_units=no_units, use_layer_norm=use_layer_norm,
-                         dropout_rate=dropout_rate, system_constants=system_constants)
+                         dropout_rate=dropout_rate, system_constants=system_constants,
+                         no_intermediate_layers=no_intermediate_layers)
+
     model.compile(optimiser, loss=[loss_fn, None], metrics=[[oef_metric, dbv_metric], None])
 
-    es = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, verbose=1)
     mc = tf.keras.callbacks.ModelCheckpoint('model.h5', monitor='val_loss', verbose=1)
 
     model.fit(synthetic_dataset, epochs=no_pt_epochs, callbacks=[mc], validation_data=(valid_x, valid_y))
