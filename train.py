@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow import keras
 from signals import SignalGenerationLayer
 
+import os
 import numpy as np
 import argparse
 import configparser
@@ -340,8 +341,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
 
     parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
+    parser.add_argument('-d', default='', help='path to the real data directory')
 
     args = parser.parse_args()
+
+    if not os.path.exists(args.d):
+        raise Exception('Real data directory not found')
+
 
     no_units = 20
     kl_weight = 0.5
@@ -397,23 +403,22 @@ if __name__ == '__main__':
 
     model.compile(optimiser, loss=[loss_fn, None], metrics=[[oef_metric, dbv_metric], None])
 
-    mc = tf.keras.callbacks.ModelCheckpoint('model.h5', monitor='val_loss', verbose=1)
-
-    model.fit(synthetic_dataset, epochs=no_pt_epochs, callbacks=[mc], validation_data=(valid_x, valid_y))
+    model.fit(synthetic_dataset, epochs=no_pt_epochs, validation_data=(valid_x, valid_y))
 
     # Load real data for fine-tuning
-    real_data = np.load('/Users/is321/Documents/Data/qBold/hyperv_data/hyperv_ase.npy')
-    real_dataset = prepare_dataset(real_data, model)
+    hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
+    baseline_data = np.load(f'{args.d}/baseline_ase.npy')
 
-    valid_data = np.load('/Users/is321/Documents/Data/qBold/hyperv_data/baseline_ase.npy')
-
-    valid_dataset = prepare_dataset(valid_data, model)
-
-    combined_data = np.concatenate([real_data, valid_data], axis=0)
+    combined_data = np.concatenate([hyperv_data, baseline_data], axis=0)
     combined_dataset = prepare_dataset(combined_data, model)
 
-    save_predictions(model, valid_data, 'pt/baseline')
-    save_predictions(model, real_data, 'pt/hyperv')
+    if not os.path.exists('pt'):
+        os.makedirs('pt')
+
+    model.save('pt/model.h5')
+
+    save_predictions(model, baseline_data, 'pt/baseline')
+    save_predictions(model, hyperv_data, 'pt/hyperv')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=ft_lr)
     input_3d = keras.layers.Input((20, 20, 8, 11))
@@ -430,7 +435,6 @@ if __name__ == '__main__':
     def predictions_loss(t, p):
         return kl_loss(t, p) * kl_weight + smoothness_loss(t, p) * smoothness_weight
 
-
     full_model.compile(full_optimiser,
                        loss={'predicted_images': lambda _x, _y: fine_tune_loss_fn(_x, _y, student_t_df=student_t_df,
                                                                                   sigma=im_loss_sigma),
@@ -438,5 +442,8 @@ if __name__ == '__main__':
                        metrics={'predictions': [smoothness_loss, kl_loss]})
     full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
                    validation_steps=1)
-    save_predictions(model, valid_data, 'baseline', use_first_op=False)
-    save_predictions(model, real_data, 'hyperv', use_first_op=False)
+
+    model.save('model.h5')
+
+    save_predictions(model, baseline_data, 'baseline', use_first_op=False)
+    save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)

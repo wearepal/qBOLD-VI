@@ -4,10 +4,7 @@ import math
 import numpy as np
 import argparse
 import configparser
-from tqdm import tqdm
 
-import scipy.integrate as integrate
-import scipy.special as special
 import tensorflow as tf
 
 keras = tf.keras
@@ -174,116 +171,6 @@ class SignalGenerationLayer(keras.layers.Layer):
                                                                   0.25 + (((self._te - self._taus) ** 2) / td)))))
 
         return signals
-
-# Original code used for generating signals before implementing tf layer
-# def calc_tissue(params, full, oef, dbv):
-#     taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
-#     gamma = float(params['gamma'])
-#     b0 = float(params['b0'])
-#     dchi = float(params['dchi'])
-#     hct = float(params['hct'])
-#     te = float(params['te'])
-#     r2t = float(params['r2t'])
-#
-#     dw = (4 / 3) * np.pi * gamma * b0 * dchi * hct * oef
-#     tc = 1 / dw
-#     r2p = dw * dbv
-#
-#     signals = np.zeros_like(taus)
-#
-#     for i, tau in enumerate(taus):
-#         if full:
-#             s = integrate.quad(lambda u: (2 + u) * np.sqrt(1 - u) *
-#                                          (1 - special.jv(0, 1.5 * (tau * dw) * u)) / (u ** 2), 0, 1)[0]
-#
-#             s = np.exp(-dbv * s / 3)
-#             s *= np.exp(-te * r2t)
-#             signals[i] = s
-#         else:
-#             if abs(tau) < tc:
-#                 s = np.exp(-r2t * te) * np.exp(- (0.3 * (r2p * tau) ** 2) / dbv)
-#             else:
-#                 s = np.exp(-r2t * te) * np.exp(dbv - (r2p * abs(tau)))
-#             signals[i] = s
-#
-#     return signals
-#
-#
-# def calc_blood(params, oef):
-#     hct = float(params['hct'])
-#     dchi = float(params['dchi'])
-#     b0 = float(params['b0'])
-#     te = float(params['te'])
-#     gamma = float(params['gamma'])
-#
-#     r2b = 4.5 + 16.4 * hct + (165.2 * hct + 55.7) * oef ** 2
-#
-#     td = 0.0045067
-#     g0 = (4 / 45) * hct * (1 - hct) * ((dchi * b0) ** 2)
-#
-#     signals = np.zeros_like(taus)
-#
-#     for i, tau in enumerate(taus):
-#         signals[i] = np.exp(-r2b * te) * np.exp(- (0.5 * (gamma ** 2) * g0 * (td ** 2)) *
-#                                                 ((te / td) + np.sqrt(0.25 + (te / td)) + 1.5 -
-#                                                  (2 * np.sqrt(0.25 + (((te + taus[i]) ** 2) / td))) -
-#                                                  (2 * np.sqrt(0.25 + (((te - taus[i]) ** 2) / td)))))
-#
-#     return signals
-#
-#
-# def generate_signal(params, full, include_blood, oef, dbv):
-#     tissue_signal = calc_tissue(params, full, oef, dbv)
-#     blood_signal = 0
-#
-#     tr = float(params['tr'])
-#     ti = float(params['ti'])
-#     t1b = float(params['t1b'])
-#     s0 = int(params['s0'])
-#
-#     if include_blood:
-#         nb = 0.775
-#
-#         m_bld = 1 - (2 - np.exp(- (tr - ti) / t1b)) * np.exp(-ti / t1b)
-#
-#         vb = dbv
-#
-#         blood_weight = m_bld * nb * vb
-#         tissue_weight = 1 - blood_weight
-#
-#         blood_signal = calc_blood(params, oef)
-#     else:
-#         blood_weight = dbv
-#         tissue_weight = 1 - blood_weight
-#
-#     return s0 * (tissue_weight * tissue_signal + blood_weight * blood_signal)
-
-# Tester function for monitoring difference between original signal generation and new tf layer
-# def test_layer_matches_python(f, b):
-#     config = configparser.ConfigParser()
-#     config.read('config')
-#     params = config['DEFAULT']
-#
-#     sig_layer = SignalGenerationLayer(params, f, b)
-#
-#     test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-#     test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
-#
-#     test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
-#
-#     signal = sig_layer(test_oef_dbv)
-#
-#     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
-#     signal2 = np.log(signal2/signal2[2])
-#
-#     noise_weights = np.sqrt([2*i/11 for i in range(1, 12)])
-#
-#     stdd = abs(signal2.mean()) / int(params['snr'])
-#     signal2 += np.random.normal(0, stdd, signal2.size)*noise_weights
-#
-#     error = abs(tf.keras.backend.mean(signal[0] - signal2))
-#
-#     assert (error < 1e-4), "Predictions are above epislon different"
 
 
 if __name__ == '__main__':

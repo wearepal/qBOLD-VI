@@ -5,6 +5,7 @@
 .idea/misc.xml
 .idea/inspectionProfiles/profiles_settings.xml
 .DS_Store
-params.csv
-signals.csv
+*.csv
+*.npy
+*.npz
 *.h5
