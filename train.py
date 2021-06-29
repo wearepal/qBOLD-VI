@@ -403,9 +403,7 @@ if __name__ == '__main__':
 
     model.compile(optimiser, loss=[loss_fn, None], metrics=[[oef_metric, dbv_metric], None])
 
-    mc = tf.keras.callbacks.ModelCheckpoint('model.h5', monitor='val_loss', verbose=1)
-
-    model.fit(synthetic_dataset, epochs=no_pt_epochs, callbacks=[mc], validation_data=(valid_x, valid_y))
+    model.fit(synthetic_dataset, epochs=no_pt_epochs, validation_data=(valid_x, valid_y))
 
     # Load real data for fine-tuning
     hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
@@ -435,7 +433,6 @@ if __name__ == '__main__':
     def predictions_loss(t, p):
         return kl_loss(t, p) * kl_weight + smoothness_loss(t, p) * smoothness_weight
 
-
     full_model.compile(full_optimiser,
                        loss={'predicted_images': lambda _x, _y: fine_tune_loss_fn(_x, _y, student_t_df=student_t_df,
                                                                                   sigma=im_loss_sigma),
@@ -443,5 +440,8 @@ if __name__ == '__main__':
                        metrics={'predictions': [smoothness_loss, kl_loss]})
     full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
                    validation_steps=1)
+
+    model.save('model.h5')
+
     save_predictions(model, baseline_data, 'baseline', use_first_op=False)
     save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)
