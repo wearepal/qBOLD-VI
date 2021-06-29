@@ -415,6 +415,8 @@ if __name__ == '__main__':
     if not os.path.exists('pt'):
         os.makedirs('pt')
 
+    model.save('pt/model.h5')
+
     save_predictions(model, baseline_data, 'pt/baseline')
     save_predictions(model, hyperv_data, 'pt/hyperv')
 
