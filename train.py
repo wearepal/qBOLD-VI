@@ -403,7 +403,7 @@ if __name__ == '__main__':
 
     model.compile(optimiser, loss=[loss_fn, None], metrics=[[oef_metric, dbv_metric], None])
 
-    model.fit(synthetic_dataset, epochs=no_pt_epochs, validation_data=(valid_x, valid_y))
+    model.fit(synthetic_dataset, epochs=1, validation_data=(valid_x, valid_y))
 
     # Load real data for fine-tuning
     hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
@@ -428,7 +428,7 @@ if __name__ == '__main__':
     sampled_oef_dbv = ReparamTrickLayer()(predicted_distribution)
 
     params['simulate_noise'] = 'False'
-    output = SignalGenerationLayer(params, False, True)(sampled_oef_dbv)
+    output = SignalGenerationLayer(params, True, True)(sampled_oef_dbv)
     full_model = keras.Model(inputs=[input_3d],
                              outputs={'predictions': predicted_distribution, 'predicted_images': output})
 

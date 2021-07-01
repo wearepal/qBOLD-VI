@@ -44,7 +44,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._full_model = full_model
         self._include_blood = include_blood
 
-        super().__init__()
+        super().__init__()  # full model error happens after here (probably during call itself)
 
     def call(self, input, *args, **kwargs):
         """
@@ -63,7 +63,7 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         tissue_signal = self.calc_tissue(oef, dbv)
         blood_signal = tf.zeros_like(tissue_signal)
-
+        keras.backend.print_tensor(oef, dbv)
         if self._include_blood:
             nb = 0.775
             m_bld = 1 - (2 - tf.math.exp(- (self._tr - self._ti) / self._t1b)) * tf.math.exp(-self._ti / self._t1b)
@@ -77,6 +77,8 @@ class SignalGenerationLayer(keras.layers.Layer):
         tissue_weight = 1 - blood_weight
 
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
+
+        keras.backend.print_tensor(signal)
 
         if self._simulate_noise:
             # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
@@ -108,13 +110,18 @@ class SignalGenerationLayer(keras.layers.Layer):
         :param dbv: A tensor containing the dbv value of each parameter pair
         :return: The signal contribution from brain tissue
         """
-        def compose(signal_idx):
+        def compose(arg):
             """
             :param signal_idx: The index for signal to calculate
             :return: The signal for the given index calculated using the full model
             """
-            return tf.math.exp(-dbv[signal_idx] * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
-                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[signal_idx]) * int_parts)) / (int_parts ** 2),
+            dbv_i, dw_i = arg
+            a = tf.constant(0, dtype=tf.float32)  # lower limit for integration
+            b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
+            int_parts = tf.linspace(a, b, 2 ** 5 + 1)  # riemann integral uses sum of many x values within limit to make estimate
+
+            return tf.math.exp(-dbv_i * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
+                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * int_parts)) / (int_parts ** 2),
                                                            int_parts) / 3) * tf.math.exp(-self._te * self._r2t)
 
         def integral(y, x):
@@ -131,11 +138,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         r2p = dw * dbv
 
         if self._full_model:
-            a = tf.constant(0, dtype=tf.float32)  # lower limit for integration
-            b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
-            int_parts = tf.linspace(a, b, 2 ** 5 + 1)  # riemann integral uses sum of many x values within limit to make estimate
-
-            signals = tf.vectorized_map(compose, tf.range(dw.shape[0]))
+            signals = tf.vectorized_map(compose, (dbv, dw))
         else:
             # Calculate the signals in both regimes and then sum and multiply by their validity. Although
             # this seems wasteful, but it's much easier to parallelise
