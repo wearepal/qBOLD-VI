@@ -81,11 +81,11 @@ class SignalGenerationLayer(keras.layers.Layer):
             # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
             norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
-            snr = tf.random.uniform((signal.shape[0],1), 5, 120) * tf.reshape(norm_snr, (1, 11))
+            snr = tf.random.uniform((signal.shape[0], 1), 5, 120) * tf.reshape(norm_snr, (1, 11))
             # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
-            std_dev = tf.reduce_mean(signal, 0, keepdims=True)/snr
+            std_dev = tf.reduce_mean(signal, 0, keepdims=True) / snr
             # Add noise at the correct level
-            signal = signal + tf.random.normal(signal.shape)*std_dev
+            signal = signal + tf.random.normal(signal.shape) * std_dev
 
         """
         # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
@@ -107,29 +107,36 @@ class SignalGenerationLayer(keras.layers.Layer):
         :param dbv: A tensor containing the dbv value of each parameter pair
         :return: The signal contribution from brain tissue
         """
+
         def compose(arg):
             """
             :param signal_idx: The index for signal to calculate
             :return: The signal for the given index calculated using the full model
             """
             dbv_i, dw_i = arg
-            # lower limit for integration, although it's defined between 0 and 1, 0 gives nans because of divide by 0.
-            a = tf.constant(1e-3, dtype=tf.float32)
+            # lower limit for integration, although it's defined between 0 and 1, 0 gives nans because of divide by 0
+            # in integrand....
+            a = tf.constant(1e-5, dtype=tf.float32)
             b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
-            int_parts = tf.linspace(a, b, 2 ** 5 + 1)  # riemann integral uses sum of many x values within limit to make estimate
+            int_parts = tf.linspace(a, b, 2 ** 8 + 1)
 
             return tf.math.exp(-dbv_i * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
-                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * int_parts)) / (int_parts ** 2),
-                                                           int_parts) / 3) * tf.math.exp(-self._te * self._r2t)
+                    1.0 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * int_parts))
+                                                 / (3.0 * tf.square(int_parts)), int_parts)) \
+                   * tf.math.exp(-self._te * self._r2t)
 
         def integral(y, x):
             """
             :param y: The y values for the sections between integral limits
             :param x: The x values of each section
-            :return: The riemann integral used to calculate a full model signal
+            :return: The integral calculated using Simpson's rule
             """
-            dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
-            return tf.reduce_sum(y[:, :-1], axis=1) * dx
+            y_a = y[:, 0:-2:2]
+            y_b = y[:, 2::2]
+            y_m = y[:, 1:-1:2]
+            h = (x[2] - x[0]) / 2.0
+            integrals = (y_a + y_b + 4.0 * y_m) * (h / 3.0)
+            return tf.reduce_sum(integrals, -1)
 
         dw = (4.0 / 3.0) * math.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
         tc = 1.0 / dw
@@ -179,6 +186,15 @@ if __name__ == '__main__':
     config.read('config')
     params = config['DEFAULT']
 
+    if False:
+        params['simulate_noise'] = 'False'
+        inp = tf.convert_to_tensor([[[[[0.4, 0.12]]]]])
+        with tf.GradientTape() as tape:
+            tape.watch(inp)
+            o = SignalGenerationLayer(params, True, True)(inp)
+            tf.keras.backend.print_tensor(o)
+        print(tape.gradient(o, inp))
+
     parser = argparse.ArgumentParser(description='Generate ASE qBOLD signals')
 
     parser.add_argument('-f',
@@ -195,12 +211,22 @@ if __name__ == '__main__':
 
     sig_layer = SignalGenerationLayer(params, args.f, args.b)
 
-    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']),
+                             maxval=float(params['oef_end']))
+    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']),
+                             maxval=float(params['dbv_end']))
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
     train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
+
     # Remove any ordering from the data
     train_y = tf.random.shuffle(train_y)
-    train_x = sig_layer(train_y)
+    train_x_list = []
+    # break into chunks to avoid running out of memory
+    for i in range(10):
+        chunk_size = train_y.shape[0] // 10
+        y_subset = train_y[i * chunk_size:(i + 1) * chunk_size]
+        train_x_list.append(sig_layer(y_subset))
+
+    train_x = tf.concat(train_x_list, axis=0)
 
     np.savez('synthetic_data', x=train_x, y=train_y)
