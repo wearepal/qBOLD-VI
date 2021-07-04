@@ -63,7 +63,6 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         tissue_signal = self.calc_tissue(oef, dbv)
         blood_signal = tf.zeros_like(tissue_signal)
-        keras.backend.print_tensor(oef, dbv)
         if self._include_blood:
             nb = 0.775
             m_bld = 1 - (2 - tf.math.exp(- (self._tr - self._ti) / self._t1b)) * tf.math.exp(-self._ti / self._t1b)
@@ -77,8 +76,6 @@ class SignalGenerationLayer(keras.layers.Layer):
         tissue_weight = 1 - blood_weight
 
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
-
-        keras.backend.print_tensor(signal)
 
         if self._simulate_noise:
             # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
@@ -116,7 +113,8 @@ class SignalGenerationLayer(keras.layers.Layer):
             :return: The signal for the given index calculated using the full model
             """
             dbv_i, dw_i = arg
-            a = tf.constant(0, dtype=tf.float32)  # lower limit for integration
+            # lower limit for integration, although it's defined between 0 and 1, 0 gives nans because of divide by 0.
+            a = tf.constant(1e-3, dtype=tf.float32)
             b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
             int_parts = tf.linspace(a, b, 2 ** 5 + 1)  # riemann integral uses sum of many x values within limit to make estimate
 
@@ -131,10 +129,10 @@ class SignalGenerationLayer(keras.layers.Layer):
             :return: The riemann integral used to calculate a full model signal
             """
             dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
-            return tf.reduce_sum(tf.where(tf.math.is_nan(y[:, :-1]), tf.zeros_like(y[:, :-1]), y[:, :-1]), axis=1) * dx
+            return tf.reduce_sum(y[:, :-1], axis=1) * dx
 
-        dw = (4 / 3) * math.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
-        tc = 1 / dw
+        dw = (4.0 / 3.0) * math.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
+        tc = 1.0 / dw
         r2p = dw * dbv
 
         if self._full_model:
