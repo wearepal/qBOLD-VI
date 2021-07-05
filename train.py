@@ -3,6 +3,7 @@
 import tensorflow as tf
 from tensorflow import keras
 from signals import SignalGenerationLayer
+import tensorflow_probability as tfp
 
 import os
 import numpy as np
@@ -99,6 +100,11 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
     return keras.Model(inputs=[input], outputs=[output, second_net])
 
 
+def transform_std(pred_stds):
+    # Transform the predicted std-dev to the correct range
+    return tf.tanh(pred_stds)*3.0
+
+
 def forward_transform(logit):
     # Define the forward transform of the predicted parameters to OEF/DBV
     oef, dbv = tf.split(logit, 2, -1)
@@ -130,15 +136,21 @@ def loss_fn(y_true, y_pred):
     y_pred = tf.reshape(y_pred, (-1, 4))
 
     oef_mean = y_pred[:, 0]
-    oef_log_std = y_pred[:, 1]
+    oef_log_std = transform_std(y_pred[:, 1])
     dbv_mean = y_pred[:, 2]
-    dbv_log_std = y_pred[:, 3]
+    dbv_log_std = transform_std(y_pred[:, 3])
+
     # Gaussian negative log likelihoods
     oef_nll = -(-oef_log_std - (1.0 / 2.0) * ((y_true[:, 0] - oef_mean) / tf.exp(oef_log_std)) ** 2)
     dbv_nll = -(-dbv_log_std - (1.0 / 2.0) * ((y_true[:, 1] - dbv_mean) / tf.exp(dbv_log_std)) ** 2)
 
     nll = tf.add(oef_nll, dbv_nll)
 
+    """ig = tfp.distributions.InverseGamma(3, 0.15)
+    lp_oef = ig.log_prob(tf.exp(oef_log_std*2))
+    lp_dbv = ig.log_prob(tf.exp(dbv_log_std*2))
+    nll = nll - (lp_oef + lp_dbv) """
+    
     return tf.reduce_mean(nll)
 
 
@@ -172,10 +184,10 @@ def dbv_metric(y_true, y_pred):
 class ReparamTrickLayer(keras.layers.Layer):
     # Draw samples of OEF and DBV from the predicted distributions
     def call(self, input, *args, **kwargs):
-        oef_sample = input[:, :, :, :, 0] + tf.random.normal(tf.shape(input[:, :, :, :, 0])) * tf.exp(
-            input[:, :, :, :, 1])
-        dbv_sample = input[:, :, :, :, 2] + tf.random.normal(tf.shape(input[:, :, :, :, 0])) * tf.exp(
-            input[:, :, :, :, 3])
+        oef_sample = input[:, :, :, :, 0] + tf.random.normal(tf.shape(input[:, :, :, :, 0])) * tf.exp(transform_std(
+            input[:, :, :, :, 1]))
+        dbv_sample = input[:, :, :, :, 2] + tf.random.normal(tf.shape(input[:, :, :, :, 0])) * tf.exp(transform_std(
+            input[:, :, :, :, 3]))
 
         samples = tf.stack([oef_sample, dbv_sample], -1)
         # Forward transform
@@ -187,7 +199,6 @@ def fine_tune_loss_fn(y_true, y_pred, student_t_df=None, sigma=0.08):
     """
     The std_dev of 0.08 is estimated from real data
     """
-    import tensorflow_probability as tfp
     mask = y_true[:, :, :, :, -1:]
     # Normalise and mask the predictions/real data
     y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
@@ -313,6 +324,7 @@ def save_predictions(model, data, filename, use_first_op=True):
 
     # Get the log stds, but don't transform them. Their meaning is complicated because of the forward transformation
     log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
+    log_stds = transform_std(log_stds)
 
     # Extract the OEF and DBV and transform them
     predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
@@ -349,7 +361,7 @@ if __name__ == '__main__':
 
     no_units = 20
     kl_weight = 1.0
-    smoothness_weight = 0.5
+    smoothness_weight = 1.0
     # Switching to None will use a Gaussian error distribution
     student_t_df = None
     dropout_rate = 0.0
