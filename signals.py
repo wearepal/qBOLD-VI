@@ -64,11 +64,13 @@ class SignalGenerationLayer(keras.layers.Layer):
         tissue_signal = self.calc_tissue(oef, dbv)
         blood_signal = tf.zeros_like(tissue_signal)
         if self._include_blood:
+            # Spin densities
             nb = 0.775
+            # compartment steady-state magnetization adapted from Cherukara et al code
+            # What paper does this come from?
             m_bld = 1 - (2 - tf.math.exp(- (self._tr - self._ti) / self._t1b)) * tf.math.exp(-self._ti / self._t1b)
-            vb = dbv
 
-            blood_weight = m_bld * nb * vb
+            blood_weight = m_bld * nb * dbv
             blood_signal = self.calc_blood(oef)
         else:
             blood_weight = dbv
@@ -166,9 +168,11 @@ class SignalGenerationLayer(keras.layers.Layer):
         :param oef: A tensor containing the the oef values from each parameter pair
         :return: The signal contribution from venous blood
         """
+        # R2b taken from Cherukara code - where is this derived from?
         r2b = 4.5 + 16.4 * self._hct + (165.2 * self._hct + 55.7) * oef ** 2
         td = 0.0045067
-        g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0) ** 2)
+        # Why is the 4pi missing from the squared term here? Missing in cherukara code as well.
+        g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0 * oef) ** 2)
 
         signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
                                                              ((self._te / td) + tf.math.sqrt(
@@ -177,7 +181,6 @@ class SignalGenerationLayer(keras.layers.Layer):
                                                                   0.25 + (((self._te + self._taus) ** 2) / td))) -
                                                               (2 * tf.math.sqrt(
                                                                   0.25 + (((self._te - self._taus) ** 2) / td)))))
-
         return signals
 
 
