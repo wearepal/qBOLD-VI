@@ -102,8 +102,8 @@ def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_no
 def forward_transform(logit):
     # Define the forward transform of the predicted parameters to OEF/DBV
     oef, dbv = tf.split(logit, 2, -1)
-    oef = tf.nn.sigmoid(oef) * 0.8
-    dbv = tf.nn.sigmoid(dbv) * 0.3
+    oef = tf.nn.sigmoid(oef) * 0.8 + 0.025
+    dbv = tf.nn.sigmoid(dbv) * 0.3 + 0.002
     output = tf.concat([oef, dbv], axis=-1)
     return output
 
@@ -116,8 +116,8 @@ def logit(signal):
 def backwards_transform(signal):
     # Define how to backwards transform OEF/DBV to the same parameterisation used by the NN
     oef, dbv = tf.split(signal, 2, -1)
-    oef = logit(oef / 0.8)
-    dbv = logit(dbv / 0.3)
+    oef = logit((oef - 0.025) / 0.8)
+    dbv = logit((dbv - 0.001) / 0.3)
     output = tf.concat([oef, dbv], axis=-1)
     return output
 
@@ -180,8 +180,6 @@ class ReparamTrickLayer(keras.layers.Layer):
         samples = tf.stack([oef_sample, dbv_sample], -1)
         # Forward transform
         samples = forward_transform(samples)
-        # Clip to avoid really tiny/large values breaking the forward model with nans
-        samples = tf.clip_by_value(samples, clip_value_min=1e-3, clip_value_max=0.99)
         return samples
 
 
@@ -350,7 +348,7 @@ if __name__ == '__main__':
 
 
     no_units = 20
-    kl_weight = 0.5
+    kl_weight = 1.0
     smoothness_weight = 0.5
     # Switching to None will use a Gaussian error distribution
     student_t_df = None
@@ -403,7 +401,7 @@ if __name__ == '__main__':
 
     model.compile(optimiser, loss=[loss_fn, None], metrics=[[oef_metric, dbv_metric], None])
 
-    model.fit(synthetic_dataset, epochs=1, validation_data=(valid_x, valid_y))
+    model.fit(synthetic_dataset, epochs=no_pt_epochs, validation_data=(valid_x, valid_y))
 
     # Load real data for fine-tuning
     hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')

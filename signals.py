@@ -44,7 +44,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._full_model = full_model
         self._include_blood = include_blood
 
-        super().__init__()  # full model error happens after here (probably during call itself)
+        super().__init__()
 
     def call(self, input, *args, **kwargs):
         """
