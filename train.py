@@ -411,7 +411,7 @@ if __name__ == '__main__':
     dropout_rate = 0.0
     use_layer_norm = False
     use_system_constants = False
-    no_pt_epochs = 20
+    no_pt_epochs = 5
     no_ft_epochs = 50
     pt_lr = 1e-3
     ft_lr = 1e-3
@@ -498,8 +498,16 @@ if __name__ == '__main__':
                                                                                   sigma=im_loss_sigma),
                              'predictions': predictions_loss},
                        metrics={'predictions': [smoothness_loss, kl_loss]})
+
+    def scheduler(epoch, lr):
+        if epoch < 10:
+            return lr
+        else:
+            return lr * 0.1
+
+    scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
     full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
-                   validation_steps=1)
+                   validation_steps=1, callbacks=[scheduler_callback])
 
     model.save('model.h5')
 
