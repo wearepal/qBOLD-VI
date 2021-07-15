@@ -3,10 +3,7 @@
 import nibabel as nib
 import numpy as np
 
-
 data_dir = '/Users/is321/Documents/Data/qBold/hyperv_data/'
-
-
 
 
 def estimate_noise_level():
@@ -19,7 +16,7 @@ def estimate_noise_level():
         for basename in basenames:
             dir_name = data_dir + subject
             brain_mask = dir_name + '/mask_' + basename + '_mask.nii.gz'
-            img = nib.load(dir_name + '/'+basename+'.nii.gz')
+            img = nib.load(dir_name + '/' + basename + '.nii.gz')
             data = img.get_fdata()
 
             mask = nib.load(brain_mask)
@@ -27,12 +24,11 @@ def estimate_noise_level():
 
             mask = mask.reshape(-1)
 
-            within_mask_data = data.reshape(-1, 11)[mask>0, :]
-            outside_mask_data = data.reshape(-1, 11)[mask==0, :]
-        
+            within_mask_data = data.reshape(-1, 11)[mask > 0, :]
+            outside_mask_data = data.reshape(-1, 11)[mask == 0, :]
+
             within_mask_mean = np.mean(within_mask_data, 0)
             outside_mask_std = np.std(outside_mask_data, 0)
-
 
             # Estimate the SNR from the corner of the image (0 true signal)
             corner_vals = 12
@@ -43,7 +39,7 @@ def estimate_noise_level():
             corner = np.concatenate([corner, corner2, corner3, corner4], 0)
             # Reshape
             corner = corner.reshape(-1, 11)
-        
+
             corner_std = np.std(corner[:, :], 0)
             snr = within_mask_mean / corner_std
             norm_snr = snr / snr[3]
@@ -63,9 +59,7 @@ def estimate_noise_level():
             plt.hist(whole_image)"""
 
     norm_snrs = np.array(norm_snr_list)
-    print(np.mean(norm_snrs,0), np.std(norm_snrs,0))
-
-estimate_noise_level()
+    print(np.mean(norm_snrs, 0), np.std(norm_snrs, 0))
 
 
 def prepare_image(image_filename):
@@ -80,16 +74,21 @@ def prepare_image(image_filename):
 
     mean_image = dir_name + '/tmean_' + basename + '.nii.gz'
     brain_mask = dir_name + '/mask_' + basename + '_mask.nii.gz'
+    mc_images = dir_name + '/mc_' + basename + '.nii.gz'
+
+    if path.exists(mc_images) == False:
+        mc_cmd = ['mcflirt', '-in', image_filename, '-out', mc_images, '-refvol', '2', '-stages', '4', '-sinc_final']
+        subprocess.run(mc_cmd)
 
     if path.exists(mean_image) == False:
-        im_mean_cmd = ['fslmaths', image_filename, '-Tmean', mean_image]
+        im_mean_cmd = ['fslmaths', mc_images, '-Tmean', mean_image]
         subprocess.run(im_mean_cmd)
 
     if path.exists(brain_mask) == False:
         mask_cmd = ['bet', mean_image, dir_name + '/mask_' + basename + '.nii.gz', '-R', '-Z', '-m', '-n']
         subprocess.run(mask_cmd)
 
-    img = nib.load(image_filename)
+    img = nib.load(mc_images)
     img_data = img.get_fdata()
 
     mask_img = nib.load(brain_mask)
@@ -105,16 +104,22 @@ def prepare_data(directory, orig_filebasename):
     """
     from glob import glob
 
-    filename = orig_filebasename+'.nii*'
-    results = glob(directory+'*/'+filename)
+    filename = orig_filebasename + '.nii*'
+    results = glob(directory + '*/' + filename)
 
+    shape = None
     data = []
     for im_filename in results:
         image_data = prepare_image(im_filename)
-        data.append(image_data)
+        if shape is None:
+            shape = image_data.shape
 
-    np.save(directory+'/'+orig_filebasename, data)
+        if shape == image_data.shape:
+            data.append(image_data)
+
+    if len(data) > 0:
+        np.save(directory + '/' + orig_filebasename, data)
 
 
-prepare_data(data_dir, "baseline_ase")
-#estimate_noise_level(data)
+prepare_data(data_dir, "hyperv_ase")
+# estimate_noise_level(data)
