@@ -244,6 +244,8 @@ def fine_tune_loss_fn(y_true, y_pred, student_t_df=None, sigma=0.08):
     The std_dev of 0.08 is estimated from real data
     """
     mask = y_true[:, :, :, :, -1:]
+    sigma = tf.reduce_mean(y_pred[:, :, :, :, -1:])
+    y_pred = y_pred[:, :, :, :, :-1]
     # Normalise and mask the predictions/real data
     y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
     y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
@@ -461,11 +463,18 @@ if __name__ == '__main__':
     model.fit(synthetic_dataset, epochs=no_pt_epochs, validation_data=(valid_x, valid_y))
 
     # Load real data for fine-tuning
+    ase_data = np.load(f'{args.d}/ASE_scan.npy')
+    ase_inf_data = np.load(f'{args.d}/ASE_INF.npy')
+    ase_sup_data = np.load(f'{args.d}/ASE_SUP.npy')
+
+    train_data = np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
+    train_dataset = prepare_dataset(train_data, model)
+
     hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
     baseline_data = np.load(f'{args.d}/baseline_ase.npy')
 
-    combined_data = np.concatenate([hyperv_data, baseline_data], axis=0)
-    combined_dataset = prepare_dataset(combined_data, model)
+    study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
+    study_dataset = prepare_dataset(study_data, model)
 
     if not os.path.exists('pt'):
         os.makedirs('pt')
@@ -483,8 +492,12 @@ if __name__ == '__main__':
 
     sampled_oef_dbv = ReparamTrickLayer()((predicted_distribution, input_mask))
 
+    sigma_layer = tfp.layers.VariableLayer(shape=(1,), dtype=tf.dtypes.float32, activation=tf.exp,
+                                           initializer=tf.keras.initializers.constant(np.log(im_loss_sigma)))
+
     params['simulate_noise'] = 'False'
     output = SignalGenerationLayer(params, True, True)(sampled_oef_dbv)
+    output = tf.concat([output, tf.ones_like(output[:, :, :, :, 0:1]) * sigma_layer(output)], -1)
     full_model = keras.Model(inputs=[input_3d, input_mask],
                              outputs={'predictions': predicted_distribution, 'predicted_images': output})
 
@@ -492,12 +505,15 @@ if __name__ == '__main__':
     def predictions_loss(t, p):
         return kl_loss(t, p) * kl_weight + smoothness_loss(t, p) * smoothness_weight
 
+    def sigma_metric(t, p):
+        return tf.reduce_mean(p[:, :, :, :, -1:])
 
     full_model.compile(full_optimiser,
                        loss={'predicted_images': lambda _x, _y: fine_tune_loss_fn(_x, _y, student_t_df=student_t_df,
                                                                                   sigma=im_loss_sigma),
                              'predictions': predictions_loss},
-                       metrics={'predictions': [smoothness_loss, kl_loss]})
+                       metrics={'predictions': [smoothness_loss, kl_loss], 'predicted_images': sigma_metric})
+
 
     def scheduler(epoch, lr):
         if epoch < 10:
@@ -505,8 +521,9 @@ if __name__ == '__main__':
         else:
             return lr * 0.1
 
+
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-    full_model.fit(combined_dataset, validation_data=combined_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
+    full_model.fit(train_dataset, validation_data=study_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
                    validation_steps=1, callbacks=[scheduler_callback])
 
     model.save('model.h5')
