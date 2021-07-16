@@ -2,66 +2,14 @@
 
 
 from signals import SignalGenerationLayer
-import tensorflow_probability as tfp
 
 import os
 import numpy as np
 import argparse
 import configparser
-import math
 from model import EncoderTrainer
 import tensorflow as tf
 from tensorflow import keras
-
-
-def fine_tune_loss_fn(y_true, y_pred, student_t_df=None, sigma=0.08):
-    """
-    The std_dev of 0.08 is estimated from real data
-    """
-    mask = y_true[:, :, :, :, -1:]
-    sigma = tf.reduce_mean(y_pred[:, :, :, :, -1:])
-    y_pred = y_pred[:, :, :, :, :-1]
-    # Normalise and mask the predictions/real data
-    y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
-    y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
-    y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
-    y_pred = tf.where(mask > 0, tf.math.log(y_pred), tf.zeros_like(y_pred))
-
-    # Calculate the residual difference between our normalised data
-    residual = y_true[:, :, :, :, :-1] - y_pred
-    residual = tf.reshape(residual, (-1, 11))
-    mask = tf.reshape(mask, (-1, 1))
-
-    # Optionally use a student-t distribution (with heavy tails) or a Gaussian distribution
-    if student_t_df is not None:
-        dist = tfp.distributions.StudentT(df=student_t_df, loc=0.0, scale=sigma)
-        nll = -dist.log_prob(residual)
-    else:
-        nll = -(-tf.math.log(sigma) - np.log(np.sqrt(2.0 * np.pi)) - 0.5 * tf.square(residual / sigma))
-
-    nll = tf.reduce_sum(nll, -1, keepdims=True)
-    nll = nll * mask
-
-    return tf.reduce_sum(nll) / tf.reduce_sum(mask)
-
-
-def kl_loss(true, predicted):
-    # Calculate the kullback-leibler divergence between the posterior and prior distibutions
-    q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(predicted, 4, -1)
-    p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, mask = tf.split(true, 5, -1)
-
-    def kl(q_mean, q_log_std, p_mean, p_log_std):
-        result = tf.exp(q_log_std * 2 - p_log_std * 2) + tf.square(p_mean - q_mean) * tf.exp(p_log_std * -2.0)
-        result = result + p_log_std * 2 - q_log_std * 2 - 1.0
-        return result * 0.5
-
-    kl_oef = kl(q_oef_mean, q_oef_log_std, p_oef_mean, p_oef_log_std)
-    kl_dbv = kl(q_dbv_mean, q_dbv_log_std, p_dbv_mean, p_dbv_log_std)
-    # Mask the KL
-    kl_op = (kl_oef + kl_dbv) * mask
-    kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
-    # keras.backend.print_tensor(kl_op)
-    return tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
 
 
 def get_constants(params):
@@ -79,19 +27,6 @@ def get_constants(params):
     consts = tf.concat([consts, taus], 0)
     consts = tf.reshape(consts, (1, -1))
     return consts
-
-
-def smoothness_loss(true_params, pred_params):
-    # Define a total variation smoothness term for the predicted means
-    q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(pred_params, 4, -1)
-    pred_params = tf.concat([q_oef_mean, q_dbv_mean], -1)
-
-    diff_x = pred_params[:, :-1, :, :, :] - pred_params[:, 1:, :, :, :]
-    diff_y = pred_params[:, :, :-1, :, :] - pred_params[:, :, 1:, :, :]
-    diff_z = pred_params[:, :, :, :-1, :] - pred_params[:, :, :, 1:, :]
-
-    diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y)) + tf.reduce_mean(tf.abs(diff_z))
-    return diffs
 
 
 def prepare_dataset(real_data, model, crop_size=20):
@@ -138,33 +73,7 @@ def prepare_dataset(real_data, model, crop_size=20):
     return real_dataset
 
 
-def save_predictions(model, data, filename, use_first_op=True):
-    import nibabel as nib
 
-    predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
-    if use_first_op is False:
-        predictions = predictions2
-
-    # Get the log stds, but don't transform them. Their meaning is complicated because of the forward transformation
-    log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
-    log_stds = transform_std(log_stds)
-
-    # Extract the OEF and DBV and transform them
-    predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
-
-    predictions = forward_transform(predictions)
-
-    def save_im_data(im_data, _filename):
-        images = np.split(im_data, data.shape[0], axis=0)
-        images = np.squeeze(np.concatenate(images, axis=-1), 0)
-        affine = np.eye(4)
-        array_img = nib.Nifti1Image(images, affine)
-        nib.save(array_img, _filename + '.nii.gz')
-
-    save_im_data(predictions[:, :, :, :, 0:1], filename + '_oef')
-    save_im_data(predictions[:, :, :, :, 1:2], filename + '_dbv')
-    # save_im_data(predictions[:, :, :, :, 2:3], filename + '_hct')
-    save_im_data(log_stds, filename + '_logstds')
 
 
 if __name__ == '__main__':
@@ -237,7 +146,10 @@ if __name__ == '__main__':
     else:
         system_constants = None
 
-    trainer = EncoderTrainer(no_units=no_units, use_layer_norm=use_layer_norm, dropout_rate=dropout_rate, no_intermediate_layers=no_intermediate_layers)
+    trainer = EncoderTrainer(no_units=no_units, use_layer_norm=use_layer_norm, dropout_rate=dropout_rate,
+                             no_intermediate_layers=no_intermediate_layers, student_t_df=student_t_df,
+                             initial_im_sigma=im_loss_sigma)
+
     model = trainer.create_encoder()
 
     def synth_loss(x, y):
@@ -276,38 +188,33 @@ if __name__ == '__main__':
 
     model.save('pt/model.h5')
 
-    save_predictions(model, baseline_data, 'pt/baseline')
-    save_predictions(model, hyperv_data, 'pt/hyperv')
+    trainer.save_predictions(model, baseline_data, 'pt/baseline')
+    trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=ft_lr)
+
+
     input_3d = keras.layers.Input((crop_size, crop_size, 8, 11))
     input_mask = keras.layers.Input((crop_size, crop_size, 8, 1))
-    net = input_3d
-    _, predicted_distribution = model(net)
-
-    sampled_oef_dbv = ReparamTrickLayer()((predicted_distribution, input_mask))
-
-    sigma_layer = tfp.layers.VariableLayer(shape=(1,), dtype=tf.dtypes.float32, activation=tf.exp,
-                                           initializer=tf.keras.initializers.constant(np.log(im_loss_sigma)))
-
     params['simulate_noise'] = 'False'
-    output = SignalGenerationLayer(params, True, True)(sampled_oef_dbv)
-    output = tf.concat([output, tf.ones_like(output[:, :, :, :, 0:1]) * sigma_layer(output)], -1)
-    full_model = keras.Model(inputs=[input_3d, input_mask],
-                             outputs={'predictions': predicted_distribution, 'predicted_images': output})
+    sig_gen_layer = SignalGenerationLayer(params, True, True)
+    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
 
+
+    def fine_tune_loss(x, y):
+        return trainer.fine_tune_loss_fn(x, y)
 
     def predictions_loss(t, p):
-        return kl_loss(t, p) * kl_weight + smoothness_loss(t, p) * smoothness_weight
+        return EncoderTrainer.kl_loss(t, p) * kl_weight + EncoderTrainer.smoothness_loss(t, p) * smoothness_weight
 
     def sigma_metric(t, p):
         return tf.reduce_mean(p[:, :, :, :, -1:])
 
     full_model.compile(full_optimiser,
-                       loss={'predicted_images': lambda _x, _y: fine_tune_loss_fn(_x, _y, student_t_df=student_t_df,
-                                                                                  sigma=im_loss_sigma),
+                       loss={'predicted_images': fine_tune_loss,
                              'predictions': predictions_loss},
-                       metrics={'predictions': [smoothness_loss, kl_loss], 'predicted_images': sigma_metric})
+                       metrics={'predictions': [EncoderTrainer.smoothness_loss, EncoderTrainer.kl_loss],
+                                'predicted_images': sigma_metric})
 
 
     def scheduler(epoch, lr):
@@ -323,5 +230,5 @@ if __name__ == '__main__':
 
     model.save('model.h5')
 
-    save_predictions(model, baseline_data, 'baseline', use_first_op=False)
-    save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)
+    trainer.save_predictions(model, baseline_data, 'baseline', use_first_op=False)
+    trainer.save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)

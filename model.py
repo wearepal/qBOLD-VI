@@ -3,12 +3,15 @@
 
 import tensorflow as tf
 from tensorflow import keras
+import tensorflow_probability as tfp
 import math
+import numpy as np
 
 
 def logit(signal):
     # Inverse sigmoid function
     return tf.math.log(signal / (1.0 - signal))
+
 
 class ReparamTrickLayer(keras.layers.Layer):
     def __init__(self, encoder_trainer):
@@ -42,13 +45,17 @@ class EncoderTrainer:
                  no_units=10,
                  use_layer_norm=False,
                  dropout_rate=0.0,
-                 activation_type='gelu'
+                 activation_type='gelu',
+                 student_t_df=None,
+                 initial_im_sigma=0.08
                  ):
         self._no_intermediate_layers = no_intermediate_layers
         self._no_units = no_units
         self._use_layer_norm = use_layer_norm
         self._dropout_rate = dropout_rate
         self._activation_type = activation_type
+        self._student_t_df = student_t_df
+        self._initial_im_sigma = initial_im_sigma
 
     def create_encoder(self, use_conv=True, system_constants=None):
         """
@@ -137,6 +144,21 @@ class EncoderTrainer:
 
         # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
         return keras.Model(inputs=[input], outputs=[output, second_net])
+
+    def build_fine_tuner(self, encoder_model, signal_generation_layer, input_im, input_mask):
+        net = input_im
+        _, predicted_distribution = encoder_model(net)
+
+        sampled_oef_dbv = ReparamTrickLayer(self)((predicted_distribution, input_mask))
+
+        sigma_layer = tfp.layers.VariableLayer(shape=(1,), dtype=tf.dtypes.float32, activation=tf.exp,
+                                               initializer=tf.keras.initializers.constant(np.log(self._initial_im_sigma)))
+
+        output = signal_generation_layer(sampled_oef_dbv)
+        output = tf.concat([output, tf.ones_like(output[:, :, :, :, 0:1]) * sigma_layer(output)], -1)
+        full_model = keras.Model(inputs=[input_im, input_mask],
+                                 outputs={'predictions': predicted_distribution, 'predicted_images': output})
+        return full_model
 
     def transform_std(self, pred_stds):
         # Transform the predicted std-dev to the correct range
@@ -239,3 +261,93 @@ class EncoderTrainer:
         nll = nll - (lp_oef + lp_dbv) """
 
         return tf.reduce_mean(nll)
+
+    def fine_tune_loss_fn(self, y_true, y_pred):
+        """
+        The std_dev of 0.08 is estimated from real data
+        """
+        mask = y_true[:, :, :, :, -1:]
+        sigma = tf.reduce_mean(y_pred[:, :, :, :, -1:])
+        y_pred = y_pred[:, :, :, :, :-1]
+        # Normalise and mask the predictions/real data
+        y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+        y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+        y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
+        y_pred = tf.where(mask > 0, tf.math.log(y_pred), tf.zeros_like(y_pred))
+
+        # Calculate the residual difference between our normalised data
+        residual = y_true[:, :, :, :, :-1] - y_pred
+        residual = tf.reshape(residual, (-1, 11))
+        mask = tf.reshape(mask, (-1, 1))
+
+        # Optionally use a student-t distribution (with heavy tails) or a Gaussian distribution
+        if self._student_t_df is not None:
+            dist = tfp.distributions.StudentT(df=self._student_t_df, loc=0.0, scale=sigma)
+            nll = -dist.log_prob(residual)
+        else:
+            nll = -(-tf.math.log(sigma) - np.log(np.sqrt(2.0 * np.pi)) - 0.5 * tf.square(residual / sigma))
+
+        nll = tf.reduce_sum(nll, -1, keepdims=True)
+        nll = nll * mask
+
+        return tf.reduce_sum(nll) / tf.reduce_sum(mask)
+
+    @staticmethod
+    def kl_loss(true, predicted):
+        # Calculate the kullback-leibler divergence between the posterior and prior distibutions
+        q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(predicted, 4, -1)
+        p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, mask = tf.split(true, 5, -1)
+
+        def kl(q_mean, q_log_std, p_mean, p_log_std):
+            result = tf.exp(q_log_std * 2 - p_log_std * 2) + tf.square(p_mean - q_mean) * tf.exp(p_log_std * -2.0)
+            result = result + p_log_std * 2 - q_log_std * 2 - 1.0
+            return result * 0.5
+
+        kl_oef = kl(q_oef_mean, q_oef_log_std, p_oef_mean, p_oef_log_std)
+        kl_dbv = kl(q_dbv_mean, q_dbv_log_std, p_dbv_mean, p_dbv_log_std)
+        # Mask the KL
+        kl_op = (kl_oef + kl_dbv) * mask
+        kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
+        # keras.backend.print_tensor(kl_op)
+        return tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
+
+    @staticmethod
+    def smoothness_loss(true_params, pred_params):
+        # Define a total variation smoothness term for the predicted means
+        q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(pred_params, 4, -1)
+        pred_params = tf.concat([q_oef_mean, q_dbv_mean], -1)
+
+        diff_x = pred_params[:, :-1, :, :, :] - pred_params[:, 1:, :, :, :]
+        diff_y = pred_params[:, :, :-1, :, :] - pred_params[:, :, 1:, :, :]
+        diff_z = pred_params[:, :, :, :-1, :] - pred_params[:, :, :, 1:, :]
+
+        diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y)) + tf.reduce_mean(tf.abs(diff_z))
+        return diffs
+
+    def save_predictions(self, model, data, filename, use_first_op=True):
+        import nibabel as nib
+
+        predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
+        if use_first_op is False:
+            predictions = predictions2
+
+        # Get the log stds, but don't transform them. Their meaning is complicated because of the forward transformation
+        log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
+        log_stds = self.transform_std(log_stds)
+
+        # Extract the OEF and DBV and transform them
+        predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
+
+        predictions = self.forward_transform(predictions)
+
+        def save_im_data(im_data, _filename):
+            images = np.split(im_data, data.shape[0], axis=0)
+            images = np.squeeze(np.concatenate(images, axis=-1), 0)
+            affine = np.eye(4)
+            array_img = nib.Nifti1Image(images, affine)
+            nib.save(array_img, _filename + '.nii.gz')
+
+        save_im_data(predictions[:, :, :, :, 0:1], filename + '_oef')
+        save_im_data(predictions[:, :, :, :, 1:2], filename + '_dbv')
+        # save_im_data(predictions[:, :, :, :, 2:3], filename + '_hct')
+        save_im_data(log_stds, filename + '_logstds')
