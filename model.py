@@ -3,6 +3,37 @@
 
 import tensorflow as tf
 from tensorflow import keras
+import math
+
+
+def logit(signal):
+    # Inverse sigmoid function
+    return tf.math.log(signal / (1.0 - signal))
+
+class ReparamTrickLayer(keras.layers.Layer):
+    def __init__(self, encoder_trainer):
+        self._encoder_trainer = encoder_trainer
+        super().__init__()
+
+    # Draw samples of OEF and DBV from the predicted distributions
+    def call(self, inputs, *args, **kwargs):
+        input, mask = inputs
+        oef_sample = input[:, :, :, :, 0] + tf.random.normal(tf.shape(input[:, :, :, :, 0])) * tf.exp(
+            self._encoder_trainer.transform_std(input[:, :, :, :, 1]))
+        dbv_sample = input[:, :, :, :, 2] + tf.random.normal(tf.shape(input[:, :, :, :, 0])) * tf.exp(
+            self._encoder_trainer.transform_std(input[:, :, :, :, 3]))
+
+        """hct_flatten = tf.keras.layers.Flatten()(input[:, :, :, :, 4:5])
+        mask_flatten = tf.keras.layers.Flatten()(mask)
+
+        hct_mean = tf.reduce_sum(hct_flatten * mask_flatten, -1) / (tf.reduce_sum(mask_flatten, -1) + 1e-5)
+        hct_std = tf.math.reduce_std(hct_flatten, -1)
+        hct_sample = tf.ones_like(oef_sample) * tf.reshape(hct_mean, (-1, 1, 1, 1))"""
+
+        samples = tf.stack([oef_sample, dbv_sample], -1)
+        # Forward transform
+        samples = self._encoder_trainer.forward_transform(samples)
+        return samples
 
 
 class EncoderTrainer:
@@ -86,11 +117,11 @@ class EncoderTrainer:
         if use_conv:
             # Add a second output that uses 3x3x3 convs
             ki = tf.keras.initializers.TruncatedNormal(stddev=0.05)  # GlorotNormal()
-            second_net = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), activation=self._activation_type, padding='same',
-                                             kernel_initializer=ki)(net)
+            second_net = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), activation=self._activation_type,
+                                             padding='same', kernel_initializer=ki)(net)
             second_net = add_normalizer(second_net)
-            second_net = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), activation=self._activation_type, padding='same',
-                                             kernel_initializer=ki)(second_net)
+            second_net = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), activation=self._activation_type,
+                                             padding='same', kernel_initializer=ki)(second_net)
 
             # Add this to the penultimate output from the 1x1x1 network
             second_net = keras.layers.Add()([second_net, net_penultimate])
@@ -106,3 +137,105 @@ class EncoderTrainer:
 
         # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
         return keras.Model(inputs=[input], outputs=[output, second_net])
+
+    def transform_std(self, pred_stds):
+        # Transform the predicted std-dev to the correct range
+        return tf.tanh(pred_stds) * 3.0
+
+    def forward_transform(self, logits):
+        # Define the forward transform of the predicted parameters to OEF/DBV
+        oef, dbv = tf.split(logits, 2, -1)
+        oef = tf.nn.sigmoid(oef) * 0.8 + 0.025
+        dbv = tf.nn.sigmoid(dbv) * 0.3 + 0.002
+        # hct = tf.nn.sigmoid(hct) * 0.02 + 0.34
+        output = tf.concat([oef, dbv], axis=-1)
+        return output
+
+    def oef_dbv_metrics(self, y_true, y_pred, oef_dbv_r2p=0):
+        """
+        Produce the MSE of the predictions of OEF or DBV
+        @param oef is a boolean, if False produces the output for DBV
+        """
+        # Reshape the data such that we can work with either volumes or single voxels
+        y_true = tf.reshape(y_true, (-1, 3))
+        y_pred = tf.reshape(y_pred, (-1, 4))
+        # keras.backend.print_tensor(tf.reduce_mean(tf.exp(y_pred[:,1])))
+        means = tf.stack([y_pred[:, 0], y_pred[:, 2]], -1)
+        means = self.forward_transform(means)
+        residual = means - y_true[:, 0:2]
+        if oef_dbv_r2p == 0:
+            residual = residual[:, 0]
+        elif oef_dbv_r2p == 1:
+            residual = residual[:, 1]
+        else:
+            dw_multiplier = (4.0 / 3.0) * math.pi * 2.64e-7 * 3.0 * 2.67513e8 * 0.34
+            r2p = means[:, 0] * dw_multiplier * means[:, 1]
+            residual = y_true[:, 2] - r2p
+
+        return tf.reduce_mean(tf.square(residual))
+
+    def oef_metric(self, y_true, y_pred):
+        return self.oef_dbv_metrics(y_true, y_pred, 0)
+
+    def dbv_metric(self, y_true, y_pred):
+        return self.oef_dbv_metrics(y_true, y_pred, 1)
+
+    def r2p_metric(self, y_true, y_pred):
+        return self.oef_dbv_metrics(y_true, y_pred, 2)
+
+    def backwards_transform(self, signal):
+        # Define how to backwards transform OEF/DBV to the same parameterisation used by the NN
+        oef, dbv = tf.split(signal, 2, -1)
+        oef = logit((oef - 0.025) / 0.8)
+        dbv = logit((dbv - 0.001) / 0.3)
+        # hct = logit((hct - 0.34) / 0.02)
+        output = tf.concat([oef, dbv], axis=-1)
+        return output
+
+    def synthetic_data_loss(self, y_true_orig, y_pred_orig):
+        # Reshape the data such that we can work with either volumes or single voxels
+        y_true_orig = tf.reshape(y_true_orig, (-1, 3))
+        # Backwards transform the true values (so we can define our distribution in the parameter space)
+        y_true = self.backwards_transform(y_true_orig[:, 0:2])
+        y_pred = tf.reshape(y_pred_orig, (-1, 4))
+
+        oef_mean = y_pred[:, 0]
+        oef_log_std = self.transform_std(y_pred[:, 1])
+        dbv_mean = y_pred[:, 2]
+        dbv_log_std = self.transform_std(y_pred[:, 3])
+
+        """hct_mean = y_pred[:, 4]
+        hct_log_std = transform_std(y_pred[:, 5])"""
+
+        # Could use sampling to calculate the distribution on r2p - need to forward transform the oef/dbv parameters
+        rpl = ReparamTrickLayer(self)
+        predictions = []
+        n_samples = 10
+        for i in range(n_samples):
+            predictions.append(rpl([y_pred_orig, tf.ones_like(y_pred_orig[:, :, :, :, 0:1])]))
+
+        predictions = tf.stack(predictions, -1)
+        predictions = tf.reshape(predictions, (-1, 2, n_samples))
+        dw_multiplier = (4.0 / 3.0) * math.pi * 2.64e-7 * 3.0 * 2.67513e8 * 0.34
+        r2p = predictions[:, 0, :] * predictions[:, 1, :] * dw_multiplier
+        # Calculate a normal distribution for r2 prime from these samples
+        r2p_mean = tf.reduce_mean(r2p, -1)
+        r2p_log_std = tf.math.log(tf.math.reduce_std(r2p, -1))
+
+        def gaussian_nll(obs, mean, log_std):
+            return -(-log_std - (1.0 / 2.0) * ((obs - mean) / tf.exp(log_std)) ** 2)
+
+        # Gaussian negative log likelihoods
+        oef_nll = gaussian_nll(y_true[:, 0], oef_mean, oef_log_std)
+        dbv_nll = gaussian_nll(y_true[:, 1], dbv_mean, dbv_log_std)
+        # hct_nll = gaussian_nll(y_true[:, 2], hct_mean, hct_log_std)
+        r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
+
+        nll = oef_nll + dbv_nll + r2p_nll  # + hct_nll
+
+        """ig = tfp.distributions.InverseGamma(3, 0.15)
+        lp_oef = ig.log_prob(tf.exp(oef_log_std*2))
+        lp_dbv = ig.log_prob(tf.exp(dbv_log_std*2))
+        nll = nll - (lp_oef + lp_dbv) """
+
+        return tf.reduce_mean(nll)
