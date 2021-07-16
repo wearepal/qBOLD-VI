@@ -52,7 +52,8 @@ def prepare_dataset(real_data, model, crop_size=20):
 
         # Separate out again
         predicted_distribution = crop_data[:, :, -predicted_distribution.shape.as_list()[-1]:]
-        predicted_distribution = tf.reshape(predicted_distribution, [crop_size, crop_size] + predicted_distribution_shape[-2:])
+        predicted_distribution = tf.reshape(predicted_distribution,
+                                            [crop_size, crop_size] + predicted_distribution_shape[-2:])
 
         data = crop_data[:, :, :data.shape[-1]]
         data = tf.reshape(data, [crop_size, crop_size] + data_shape[-2:])
@@ -73,47 +74,8 @@ def prepare_dataset(real_data, model, crop_size=20):
     return real_dataset
 
 
-
-
-
-if __name__ == '__main__':
-    import wandb
-    from wandb.keras import WandbCallback
-
-    wandb.init(project='qbold_inference', entity='ivorsimpson')
-    wb_config = wandb.config
-
-    config = configparser.ConfigParser()
-    config.read('config')
-    params = config['DEFAULT']
-    parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
-
-    parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
-    parser.add_argument('-d', default='', help='path to the real data directory')
-
-    args = parser.parse_args()
-
-    if not os.path.exists(args.d):
-        raise Exception('Real data directory not found')
-
-    no_units = 20
-    kl_weight = 1.0
-    smoothness_weight = 1.0
-    # Switching to None will use a Gaussian error distribution
-    student_t_df = 10
-    dropout_rate = 0.0
-    use_layer_norm = False
-    use_system_constants = False
-    no_pt_epochs = 5
-    no_ft_epochs = 50
-    pt_lr = 1e-3
-    ft_lr = 1e-3
-    im_loss_sigma = 0.08
-    no_intermediate_layers = 1
-    predict_hct = False
-    crop_size = 32
-
-    data_file = np.load(args.f)
+def prepare_synthetic_dataset(filename):
+    data_file = np.load(filename)
     x = data_file['x']
     y = data_file['y']
 
@@ -138,36 +100,81 @@ if __name__ == '__main__':
 
     synthetic_dataset = synthetic_dataset.shuffle(10000)
     synthetic_dataset = synthetic_dataset.batch(6)
+    return synthetic_dataset, (valid_x, valid_y)
 
-    optimiser = tf.keras.optimizers.Adam(learning_rate=pt_lr)
 
-    if use_system_constants:
+if __name__ == '__main__':
+    import wandb
+    from wandb.keras import WandbCallback
+
+    defaults = dict(
+        no_units=10,
+        no_intermediate_layers=1,
+        student_t_df=10,  # Switching to None will use a Gaussian error distribution
+        pt_lr=1e-3,
+        ft_lr=1e-3,
+        kl_weight=1.0,
+        smoothness_weight=1.0,
+        dropout_rate=0.0,
+        no_pt_epochs=5,
+        no_ft_epochs=50,
+        im_loss_sigma=0.08,
+        crop_size=32,
+        use_layer_norm=False
+    )
+
+    wandb.init(project='qbold_inference', entity='ivorsimpson', config=defaults)
+    wb_config = wandb.config
+
+    config = configparser.ConfigParser()
+    config.read('config')
+    params = config['DEFAULT']
+    parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
+
+    parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
+    parser.add_argument('-d', default='', help='path to the real data directory')
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.d):
+        raise Exception('Real data directory not found')
+
+    optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.pt_lr)
+
+    """if wb_config.use_system_constants:
         system_constants = get_constants(params)
     else:
-        system_constants = None
+        system_constants = None"""
 
-    trainer = EncoderTrainer(no_units=no_units, use_layer_norm=use_layer_norm, dropout_rate=dropout_rate,
-                             no_intermediate_layers=no_intermediate_layers, student_t_df=student_t_df,
-                             initial_im_sigma=im_loss_sigma)
+    trainer = EncoderTrainer(no_units=wb_config.no_units, use_layer_norm=wb_config.use_layer_norm,
+                             dropout_rate=wb_config.dropout_rate,
+                             no_intermediate_layers=wb_config.no_intermediate_layers,
+                             student_t_df=wb_config.student_t_df,
+                             initial_im_sigma=wb_config.im_loss_sigma)
 
     model = trainer.create_encoder()
+
 
     def synth_loss(x, y):
         return trainer.synthetic_data_loss(x, y)
 
+
     def oef_metric(x, y):
         return trainer.oef_metric(x, y)
+
 
     def dbv_metric(x, y):
         return trainer.dbv_metric(x, y)
 
+
     def r2p_metric(x, y):
         return trainer.r2p_metric(x, y)
 
+
     model.compile(optimiser, loss=[synth_loss, None],
                   metrics=[[oef_metric, dbv_metric, r2p_metric], None])
-
-    model.fit(synthetic_dataset, epochs=no_pt_epochs, validation_data=(valid_x, valid_y))
+    synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(args.f)
+    model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation)
 
     # Load real data for fine-tuning
     ase_data = np.load(f'{args.d}/ASE_scan.npy')
@@ -175,13 +182,13 @@ if __name__ == '__main__':
     ase_sup_data = np.load(f'{args.d}/ASE_SUP.npy')
 
     train_data = np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
-    train_dataset = prepare_dataset(train_data, model, crop_size)
+    train_dataset = prepare_dataset(train_data, model, wb_config.crop_size)
 
     hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
     baseline_data = np.load(f'{args.d}/baseline_ase.npy')
 
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
-    study_dataset = prepare_dataset(study_data, model, crop_size)
+    study_dataset = prepare_dataset(study_data, model, wb_config.crop_size)
 
     if not os.path.exists('pt'):
         os.makedirs('pt')
@@ -191,11 +198,10 @@ if __name__ == '__main__':
     trainer.save_predictions(model, baseline_data, 'pt/baseline')
     trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
 
-    full_optimiser = tf.keras.optimizers.Adam(learning_rate=ft_lr)
+    full_optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.ft_lr)
 
-
-    input_3d = keras.layers.Input((crop_size, crop_size, 8, 11))
-    input_mask = keras.layers.Input((crop_size, crop_size, 8, 1))
+    input_3d = keras.layers.Input((wb_config.crop_size, wb_config.crop_size, 8, 11))
+    input_mask = keras.layers.Input((wb_config.crop_size, wb_config.crop_size, 8, 1))
     params['simulate_noise'] = 'False'
     sig_gen_layer = SignalGenerationLayer(params, True, True)
     full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
@@ -204,11 +210,15 @@ if __name__ == '__main__':
     def fine_tune_loss(x, y):
         return trainer.fine_tune_loss_fn(x, y)
 
+
     def predictions_loss(t, p):
-        return EncoderTrainer.kl_loss(t, p) * kl_weight + EncoderTrainer.smoothness_loss(t, p) * smoothness_weight
+        return EncoderTrainer.kl_loss(t, p) * wb_config.kl_weight + \
+               EncoderTrainer.smoothness_loss(t, p) * wb_config.smoothness_weight
+
 
     def sigma_metric(t, p):
         return tf.reduce_mean(p[:, :, :, :, -1:])
+
 
     full_model.compile(full_optimiser,
                        loss={'predicted_images': fine_tune_loss,
@@ -225,7 +235,7 @@ if __name__ == '__main__':
 
 
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-    full_model.fit(train_dataset, validation_data=study_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
+    full_model.fit(train_dataset, validation_data=study_dataset, steps_per_epoch=100, epochs=wb_config.no_ft_epochs,
                    validation_steps=1, callbacks=[scheduler_callback, WandbCallback()])
 
     model.save('model.h5')
