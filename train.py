@@ -319,7 +319,7 @@ def smoothness_loss(true_params, pred_params):
     return diffs
 
 
-def prepare_dataset(real_data, model):
+def prepare_dataset(real_data, model, crop_size=20):
     # Prepare the real data
     real_data = np.float32(real_data[:, 10:-10, 10:-10, :, :])
     # Mask the data and make some predictions to provide a prior distribution
@@ -338,14 +338,14 @@ def prepare_dataset(real_data, model):
 
         # concatenate to crop
         crop_data = tf.concat([data, predicted_distribution], -1)
-        crop_data = tf.image.random_crop(value=crop_data, size=(20, 20, crop_data.shape[-1]))
+        crop_data = tf.image.random_crop(value=crop_data, size=(crop_size, crop_size, crop_data.shape[-1]))
 
         # Separate out again
         predicted_distribution = crop_data[:, :, -predicted_distribution.shape.as_list()[-1]:]
-        predicted_distribution = tf.reshape(predicted_distribution, [20, 20] + predicted_distribution_shape[-2:])
+        predicted_distribution = tf.reshape(predicted_distribution, [crop_size, crop_size] + predicted_distribution_shape[-2:])
 
         data = crop_data[:, :, :data.shape[-1]]
-        data = tf.reshape(data, [20, 20] + data_shape[-2:])
+        data = tf.reshape(data, [crop_size, crop_size] + data_shape[-2:])
         mask = data[:, :, :, -1:]
 
         data = data[:, :, :, :-1] * data[:, :, :, -1:]
@@ -357,6 +357,7 @@ def prepare_dataset(real_data, model):
         return (data[:, :, :, :-1], mask), {'predictions': predicted_distribution, 'predicted_images': data}
 
     real_dataset = real_dataset.map(map_func2)
+    real_dataset = real_dataset.shuffle(10000)
     real_dataset = real_dataset.batch(6, drop_remainder=True)
     real_dataset = real_dataset.repeat(-1)
     return real_dataset
@@ -392,6 +393,12 @@ def save_predictions(model, data, filename, use_first_op=True):
 
 
 if __name__ == '__main__':
+    import wandb
+    from wandb.keras import WandbCallback
+
+    wandb.init(project='qbold_inference', entity='ivorsimpson')
+    wb_config = wandb.config
+
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
@@ -405,11 +412,11 @@ if __name__ == '__main__':
     if not os.path.exists(args.d):
         raise Exception('Real data directory not found')
 
-    no_units = 20
+    no_units = 40
     kl_weight = 1.0
     smoothness_weight = 1.0
     # Switching to None will use a Gaussian error distribution
-    student_t_df = None
+    student_t_df = 10
     dropout_rate = 0.0
     use_layer_norm = False
     use_system_constants = False
@@ -418,8 +425,9 @@ if __name__ == '__main__':
     pt_lr = 1e-3
     ft_lr = 1e-3
     im_loss_sigma = 0.08
-    no_intermediate_layers = 1
+    no_intermediate_layers = 2
     predict_hct = False
+    crop_size = 32
 
     data_file = np.load(args.f)
     x = data_file['x']
@@ -468,13 +476,13 @@ if __name__ == '__main__':
     ase_sup_data = np.load(f'{args.d}/ASE_SUP.npy')
 
     train_data = np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
-    train_dataset = prepare_dataset(train_data, model)
+    train_dataset = prepare_dataset(train_data, model, crop_size)
 
     hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
     baseline_data = np.load(f'{args.d}/baseline_ase.npy')
 
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
-    study_dataset = prepare_dataset(study_data, model)
+    study_dataset = prepare_dataset(study_data, model, crop_size)
 
     if not os.path.exists('pt'):
         os.makedirs('pt')
@@ -485,8 +493,8 @@ if __name__ == '__main__':
     save_predictions(model, hyperv_data, 'pt/hyperv')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=ft_lr)
-    input_3d = keras.layers.Input((20, 20, 8, 11))
-    input_mask = keras.layers.Input((20, 20, 8, 1))
+    input_3d = keras.layers.Input((crop_size, crop_size, 8, 11))
+    input_mask = keras.layers.Input((crop_size, crop_size, 8, 1))
     net = input_3d
     _, predicted_distribution = model(net)
 
@@ -524,7 +532,7 @@ if __name__ == '__main__':
 
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
     full_model.fit(train_dataset, validation_data=study_dataset, steps_per_epoch=100, epochs=no_ft_epochs,
-                   validation_steps=1, callbacks=[scheduler_callback])
+                   validation_steps=1, callbacks=[scheduler_callback, WandbCallback()])
 
     model.save('model.h5')
 
