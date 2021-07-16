@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import tensorflow as tf
-from tensorflow import keras
+
 from signals import SignalGenerationLayer
 import tensorflow_probability as tfp
 
@@ -10,97 +9,9 @@ import numpy as np
 import argparse
 import configparser
 import math
-
-
-def create_model(use_conv=True, system_constants=None, no_units=18, use_layer_norm=False, dropout_rate=0.0,
-                 no_intermediate_layers=1):
-    """
-    @param: use_conv (Boolean) : whether to use a convolution (1x1x1) or MLP model
-    @params: system_constants (array): If not None, perform a dense transformation and multiply with first level representation
-    @params: no_units (unsigned int): The number of units for each level of the network
-    @params: use_layer_norm (Boolean) : Perform layer normalisation
-    @params: dropout_rate (float, 0-1) : perform dropout
-    @params: no_intermediate layers (unsigned int) : the number of extra layers apart from the first and last
-    """
-
-    def create_layer(_no_units, activation='gelu'):
-        if use_conv:
-            return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), activation=activation)
-        else:
-            return keras.layers.Dense(_no_units, activation=activation)
-
-    def normalise_data(_data):
-        # Do the normalisation as part of the model
-        orig_shape = tf.shape(_data)
-        _data = tf.reshape(_data, (-1, 11))
-        _data = tf.clip_by_value(_data, 1e-2, 1e8)
-        # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
-        _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
-        # Take the logarithm
-        _data = tf.math.log(_data)
-        _data = tf.reshape(_data, orig_shape)
-        return _data
-
-    if use_conv:
-        input = keras.layers.Input(shape=(None, None, None, 11), ragged=False)
-    else:
-        input = keras.layers.Input(shape=(11,))
-
-    net = input
-
-    net = keras.layers.Lambda(normalise_data)(net)
-
-    def add_normalizer(_net):
-        # Possibly add dropout and a normalization layer, depending on the dropout_rate and use_layer_norm values
-        import tensorflow_addons as tfa
-        if dropout_rate > 0.0:
-            _net = keras.layers.Dropout(dropout_rate)(_net)
-        if use_layer_norm:
-            _net = tfa.layers.GroupNormalization(groups=1, axis=-1)(_net)
-        return _net
-
-    # Create the initial layer
-    net = create_layer(no_units)(net)
-    net = add_normalizer(net)
-
-    # If we passed in the system constants, we can apply a dense layer to then multiply them with the network
-    if system_constants is not None:
-        const_net = keras.layers.Dense(no_units)(system_constants)
-        net = keras.layers.Multiply()([net, keras.layers.Reshape((1, 1, 1, -1))(const_net)])
-
-    # Add intermediate layers layers
-    for i in range(no_intermediate_layers):
-        net = add_normalizer(net)
-        net = create_layer(no_units)(net)
-
-    net = add_normalizer(net)
-    # Create the penultimate layer, leaving net available for more processing
-    net_penultimate = create_layer(no_units)(net)
-
-    if use_conv:
-        # Add a second output that uses 3x3x3 convs
-        ki = tf.keras.initializers.TruncatedNormal(stddev=0.05)  # GlorotNormal()
-        second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), activation='gelu', padding='same',
-                                         kernel_initializer=ki)(net)
-        second_net = add_normalizer(second_net)
-        second_net = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), activation='gelu', padding='same',
-                                         kernel_initializer=ki)(second_net)
-
-        # Add this to the penultimate output from the 1x1x1 network
-        second_net = keras.layers.Add()([second_net, net_penultimate])
-    else:
-        second_net = net_penultimate
-
-    # Create the final layer, which produces a mean and variance for OEF and DBV
-    final_layer = create_layer(4, activation=None)
-    # Create an output that just looks at individual voxels
-    output = final_layer(net_penultimate)
-    # Create another output that also looks at neighbourhoods
-    second_net = final_layer(second_net)
-
-    # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
-    return keras.Model(inputs=[input], outputs=[output, second_net])
-
+from model import EncoderTrainer
+import tensorflow as tf
+from tensorflow import keras
 
 def transform_std(pred_stds):
     # Transform the predicted std-dev to the correct range
@@ -412,7 +323,7 @@ if __name__ == '__main__':
     if not os.path.exists(args.d):
         raise Exception('Real data directory not found')
 
-    no_units = 40
+    no_units = 20
     kl_weight = 1.0
     smoothness_weight = 1.0
     # Switching to None will use a Gaussian error distribution
@@ -425,7 +336,7 @@ if __name__ == '__main__':
     pt_lr = 1e-3
     ft_lr = 1e-3
     im_loss_sigma = 0.08
-    no_intermediate_layers = 2
+    no_intermediate_layers = 1
     predict_hct = False
     crop_size = 32
 
@@ -462,9 +373,8 @@ if __name__ == '__main__':
     else:
         system_constants = None
 
-    model = create_model(use_conv=train_conv, no_units=no_units, use_layer_norm=use_layer_norm,
-                         dropout_rate=dropout_rate, system_constants=system_constants,
-                         no_intermediate_layers=no_intermediate_layers)
+    trainer = EncoderTrainer(no_units=no_units, use_layer_norm=use_layer_norm, dropout_rate=dropout_rate, no_intermediate_layers=no_intermediate_layers)
+    model = trainer.create_encoder()
 
     model.compile(optimiser, loss=[loss_fn, None], metrics=[[oef_metric, dbv_metric, r2p_metric], None])
 
