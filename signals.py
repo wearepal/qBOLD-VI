@@ -60,8 +60,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         :return: The predicted signal
         """
         # Store the original shape, ignoring the last two dimensions
-        original_shape = input.shape[:-1]
-
+        original_shape = tf.shape(input)
         if self._variable_hct:
             assert input.shape[-1] == 3, 'Input should have 3 elements in last dimension, OEF, DBV and hct'
 
@@ -130,10 +129,8 @@ class SignalGenerationLayer(keras.layers.Layer):
         signal = tf.math.log(signal/tf.expand_dims(tau_zero_data, 1))
         """
 
-        # The predicted signal should have the original shape with len(self.taus)
-        new_shape = original_shape.as_list() + [len(self._taus)]
-        # Set the first value of new_shape to -1 (in case we have an unknown batch size)
-        new_shape[0] = -1
+        # The predicted signal should have the original shape with len(self.taus) for the final dimension
+        new_shape = tf.concat([original_shape[0:-1], [len(self._taus)]],0)
         signal = tf.reshape(signal, new_shape)
 
         return signal
@@ -157,7 +154,6 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         def compose(arg):
             """
-            :param signal_idx: The index for signal to calculate
             :return: The signal for the given index calculated using the full model
             """
             dbv_i, dw_i = arg
@@ -259,7 +255,7 @@ if __name__ == '__main__':
 
     variable_hct = False
 
-    sig_layer = SignalGenerationLayer(params, args.f, args.b, misaligned_prob=0.2, variable_hct=variable_hct)
+    sig_layer = SignalGenerationLayer(params, args.f, args.b, misaligned_prob=0.1, variable_hct=variable_hct)
 
     oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']),
                              maxval=float(params['oef_end']))
