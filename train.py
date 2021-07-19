@@ -29,7 +29,7 @@ def get_constants(params):
     return consts
 
 
-def prepare_dataset(real_data, model, crop_size=20):
+def prepare_dataset(real_data, model, crop_size=20, training=True):
     # Prepare the real data
     real_data = np.float32(real_data[:, 10:-10, 10:-10, :, :])
     # Mask the data and make some predictions to provide a prior distribution
@@ -68,8 +68,12 @@ def prepare_dataset(real_data, model, crop_size=20):
         return (data[:, :, :, :-1], mask), {'predictions': predicted_distribution, 'predicted_images': data}
 
     real_dataset = real_dataset.map(map_func2)
-    real_dataset = real_dataset.shuffle(10000)
-    real_dataset = real_dataset.batch(6, drop_remainder=True)
+    if training:
+        real_dataset = real_dataset.shuffle(10000)
+        real_dataset = real_dataset.batch(6, drop_remainder=True)
+    else:
+        real_dataset = real_dataset.batch(12, drop_remainder=True)
+
     real_dataset = real_dataset.repeat(-1)
     return real_dataset
 
@@ -110,7 +114,7 @@ if __name__ == '__main__':
     defaults = dict(
         no_units=10,
         no_intermediate_layers=1,
-        student_t_df=10,  # Switching to None will use a Gaussian error distribution
+        student_t_df=4,  # Switching to None will use a Gaussian error distribution
         pt_lr=1e-3,
         ft_lr=1e-3,
         kl_weight=1.0,
@@ -123,7 +127,7 @@ if __name__ == '__main__':
         use_layer_norm=False
     )
 
-    wandb.init(project='qbold_inference', entity='ivorsimpson', config=defaults)
+    wandb.init(config=defaults, project='qbold_inference', entity='ivorsimpson')
     wb_config = wandb.config
 
     config = configparser.ConfigParser()
@@ -188,7 +192,7 @@ if __name__ == '__main__':
     baseline_data = np.load(f'{args.d}/baseline_ase.npy')
 
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
-    study_dataset = prepare_dataset(study_data, model, wb_config.crop_size)
+    study_dataset = prepare_dataset(study_data, model, 76, training=False)
 
     if not os.path.exists('pt'):
         os.makedirs('pt')
@@ -200,8 +204,8 @@ if __name__ == '__main__':
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.ft_lr)
 
-    input_3d = keras.layers.Input((wb_config.crop_size, wb_config.crop_size, 8, 11))
-    input_mask = keras.layers.Input((wb_config.crop_size, wb_config.crop_size, 8, 1))
+    input_3d = keras.layers.Input((None, None, 8, 11))
+    input_mask = keras.layers.Input((None, None, 8, 1))
     params['simulate_noise'] = 'False'
     sig_gen_layer = SignalGenerationLayer(params, True, True)
     full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
@@ -215,10 +219,24 @@ if __name__ == '__main__':
         return EncoderTrainer.kl_loss(t, p) * wb_config.kl_weight + \
                EncoderTrainer.smoothness_loss(t, p) * wb_config.smoothness_weight
 
-
     def sigma_metric(t, p):
         return tf.reduce_mean(p[:, :, :, :, -1:])
 
+    class ELBOCallback(tf.keras.callbacks.Callback):
+        def __init__(self, dataset):
+            self._iter = iter(dataset)
+
+        def on_epoch_end(self, epoch, logs=None):
+            data, y = next(self._iter)
+            predictions = self.model.predict(data)
+            nll = fine_tune_loss(y['predicted_images'], predictions['predicted_images'])
+            kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'])
+            smoothness = EncoderTrainer.smoothness_loss(y['predictions'], predictions['predictions'])
+            metrics = {'val_nll': nll, 'val_elbo': nll+kl, 'val_elbo_smooth': nll+kl+smoothness,
+                       'val_smoothness': smoothness, 'val_kl': kl}
+            wandb.log(metrics)
+
+    elbo_callback = ELBOCallback(study_dataset)
 
     full_model.compile(full_optimiser,
                        loss={'predicted_images': fine_tune_loss,
@@ -235,8 +253,8 @@ if __name__ == '__main__':
 
 
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-    full_model.fit(train_dataset, validation_data=study_dataset, steps_per_epoch=100, epochs=wb_config.no_ft_epochs,
-                   validation_steps=1, callbacks=[scheduler_callback, WandbCallback()])
+    full_model.fit(train_dataset, steps_per_epoch=100, epochs=wb_config.no_ft_epochs,
+                   callbacks=[scheduler_callback, WandbCallback(), elbo_callback])
 
     model.save('model.h5')
 
