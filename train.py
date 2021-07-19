@@ -106,6 +106,28 @@ def prepare_synthetic_dataset(filename):
     synthetic_dataset = synthetic_dataset.batch(6)
     return synthetic_dataset, (valid_x, valid_y)
 
+def setup_argparser(defaults_dict):
+    parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
+
+    parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
+    parser.add_argument('-d', default='/home/data/qbold/', help='path to the real data directory')
+    parser.add_argument('--no_units', type=int, default=defaults_dict['no_units'])
+    parser.add_argument('--no_pt_epochs', type=int, default=defaults_dict['no_pt_epochs'])
+    parser.add_argument('--no_ft_epochs', type=int, default=defaults_dict['no_ft_epochs'])
+    parser.add_argument('--student_t_df', type=int, default=defaults_dict['student_t_df'])
+    parser.add_argument('--crop_size', type=int, default=defaults_dict['crop_size'])
+    parser.add_argument('--no_intermediate_layers', type=int, default=defaults_dict['no_intermediate_layers'])
+    parser.add_argument('--kl_weight', type=float, default=defaults_dict['kl_weight'])
+    parser.add_argument('--smoothness_weight', type=float, default=defaults_dict['smoothness_weight'])
+    parser.add_argument('--pt_lr', type=float, default=defaults_dict['pt_lr'])
+    parser.add_argument('--ft_lr', type=float, default=defaults_dict['ft_lr'])
+    parser.add_argument('--dropout_rate', type=float, default=defaults_dict['dropout_rate'])
+    parser.add_argument('--im_loss_sigma', type=float, default=defaults_dict['im_loss_sigma'])
+    parser.add_argument('--use_layer_norm', type=bool, default=defaults_dict['use_layer_norm'])
+    return parser
+
+
+
 
 if __name__ == '__main__':
     import wandb
@@ -121,24 +143,22 @@ if __name__ == '__main__':
         smoothness_weight=1.0,
         dropout_rate=0.0,
         no_pt_epochs=5,
-        no_ft_epochs=50,
+        no_ft_epochs=40,
         im_loss_sigma=0.08,
         crop_size=32,
         use_layer_norm=False
     )
+    parser = setup_argparser(defaults)
+    args = parser.parse_args()
 
-    wandb.init(config=defaults, project='qbold_inference', entity='ivorsimpson')
+    wandb.init(project='qbold_inference', entity='ivorsimpson')
+    wandb.config.update(args)
     wb_config = wandb.config
 
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
-    parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
 
-    parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
-    parser.add_argument('-d', default='', help='path to the real data directory')
-
-    args = parser.parse_args()
 
     if not os.path.exists(args.d):
         raise Exception('Real data directory not found')
@@ -178,7 +198,8 @@ if __name__ == '__main__':
     model.compile(optimiser, loss=[synth_loss, None],
                   metrics=[[oef_metric, dbv_metric, r2p_metric], None])
     synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(args.f)
-    model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation)
+    model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation,
+              callbacks=[tf.keras.callbacks.TerminateOnNaN()])
 
     # Load real data for fine-tuning
     ase_data = np.load(f'{args.d}/ASE_scan.npy')
@@ -248,13 +269,16 @@ if __name__ == '__main__':
     def scheduler(epoch, lr):
         if epoch < 10:
             return lr
-        else:
+        elif epoch < 20:
             return lr * 0.1
+        else:
+            return lr * 1e-2
 
 
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
     full_model.fit(train_dataset, steps_per_epoch=100, epochs=wb_config.no_ft_epochs,
-                   callbacks=[scheduler_callback, WandbCallback(), elbo_callback])
+                   callbacks=[scheduler_callback, WandbCallback(), elbo_callback,
+                              tf.keras.callbacks.TerminateOnNaN()])
 
     model.save('model.h5')
 
