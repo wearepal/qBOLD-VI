@@ -267,12 +267,10 @@ if __name__ == '__main__':
 
 
     def scheduler(epoch, lr):
-        if epoch < 10:
+        if epoch < 20:
             return lr
-        elif epoch < 20:
-            return lr * 0.1
         else:
-            return lr * 1e-2
+            return lr * 0.8
 
 
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)

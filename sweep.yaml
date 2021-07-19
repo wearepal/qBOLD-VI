@@ -1,5 +1,6 @@
 program: train.py
 method: bayes
+project: qbold_inference
 metric:
   name: val_elbo
   goal: minimize
@@ -8,19 +9,17 @@ parameters:
   no_units:
     values: [5, 10, 15, 20, 25]
   student_t_df:
-    values: [1, 3, 5, 10, 15, 20]
+    values: [1, 3, 5, 10, 20, 100]
   no_pt_epochs:
     values: [3, 5, 7, 10]
   crop_size:
     values: [32, 48, 24]
   pt_lr:
-    min: 1e-4
-    max: 1e-2
+    values: [1e-2, 5e-3, 2e-3, 1e-3, 8e-4, 5e-4, 1e-4]
   ft_lr:
-    min: 1e-4
-    max: 1e-2
+    values: [1e-2, 5e-3, 2e-3, 1e-3, 8e-4, 5e-4, 1e-4]
   dropout_rate:
-    values: [0.0, 0.1, 0.2]
+    values: [0.0, 0.025, 0.05, 0.075, 0.1]
   no_intermediate_layers:
     value: 1
   no_ft_epochs:
