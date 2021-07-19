@@ -47,7 +47,8 @@ class EncoderTrainer:
                  dropout_rate=0.0,
                  activation_type='gelu',
                  student_t_df=None,
-                 initial_im_sigma=0.08
+                 initial_im_sigma=0.08,
+                 multi_image_normalisation=True
                  ):
         self._no_intermediate_layers = no_intermediate_layers
         self._no_units = no_units
@@ -56,6 +57,7 @@ class EncoderTrainer:
         self._activation_type = activation_type
         self._student_t_df = student_t_df
         self._initial_im_sigma = initial_im_sigma
+        self._multi_image_normalisation = multi_image_normalisation
 
     def create_encoder(self, use_conv=True, system_constants=None):
         """
@@ -78,8 +80,11 @@ class EncoderTrainer:
             orig_shape = tf.shape(_data)
             _data = tf.reshape(_data, (-1, 11))
             _data = tf.clip_by_value(_data, 1e-2, 1e8)
-            # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
-            _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
+            if self._multi_image_normalisation:
+                # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
+                _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
+            else:
+                _data = _data / tf.reduce_mean(_data[:, 2:3], -1, keepdims=True)
             # Take the logarithm
             _data = tf.math.log(_data)
             _data = tf.reshape(_data, orig_shape)
@@ -214,7 +219,7 @@ class EncoderTrainer:
         output = tf.concat([oef, dbv], axis=-1)
         return output
 
-    def synthetic_data_loss(self, y_true_orig, y_pred_orig):
+    def synthetic_data_loss(self, y_true_orig, y_pred_orig, use_r2p_loss):
         # Reshape the data such that we can work with either volumes or single voxels
         y_true_orig = tf.reshape(y_true_orig, (-1, 3))
         # Backwards transform the true values (so we can define our distribution in the parameter space)
@@ -226,41 +231,40 @@ class EncoderTrainer:
         dbv_mean = y_pred[:, 2]
         dbv_log_std = self.transform_std(y_pred[:, 3])
 
-        """hct_mean = y_pred[:, 4]
-        hct_log_std = transform_std(y_pred[:, 5])"""
-
-        # Could use sampling to calculate the distribution on r2p - need to forward transform the oef/dbv parameters
-        rpl = ReparamTrickLayer(self)
-        predictions = []
-        n_samples = 10
-        for i in range(n_samples):
-            predictions.append(rpl([y_pred_orig, tf.ones_like(y_pred_orig[:, :, :, :, 0:1])]))
-
-        predictions = tf.stack(predictions, -1)
-        predictions = tf.reshape(predictions, (-1, 2, n_samples))
-        dw_multiplier = (4.0 / 3.0) * math.pi * 2.64e-7 * 3.0 * 2.67513e8 * 0.34
-        r2p = predictions[:, 0, :] * predictions[:, 1, :] * dw_multiplier
-        # Calculate a normal distribution for r2 prime from these samples
-        r2p_mean = tf.reduce_mean(r2p, -1)
-        r2p_log_std = tf.math.log(tf.math.reduce_std(r2p, -1))
-
         def gaussian_nll(obs, mean, log_std):
             return -(-log_std - (1.0 / 2.0) * ((obs - mean) / tf.exp(log_std)) ** 2)
 
         # Gaussian negative log likelihoods
         oef_nll = gaussian_nll(y_true[:, 0], oef_mean, oef_log_std)
         dbv_nll = gaussian_nll(y_true[:, 1], dbv_mean, dbv_log_std)
-        # hct_nll = gaussian_nll(y_true[:, 2], hct_mean, hct_log_std)
-        r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
+        loss = oef_nll + dbv_nll
 
-        nll = oef_nll + dbv_nll + r2p_nll  # + hct_nll
+        """hct_mean = y_pred[:, 4]
+        hct_log_std = transform_std(y_pred[:, 5])"""
+        if use_r2p_loss:
+            # Could use sampling to calculate the distribution on r2p - need to forward transform the oef/dbv parameters
+            rpl = ReparamTrickLayer(self)
+            predictions = []
+            n_samples = 10
+            for i in range(n_samples):
+                predictions.append(rpl([y_pred_orig, tf.ones_like(y_pred_orig[:, :, :, :, 0:1])]))
+
+            predictions = tf.stack(predictions, -1)
+            predictions = tf.reshape(predictions, (-1, 2, n_samples))
+            dw_multiplier = (4.0 / 3.0) * math.pi * 2.64e-7 * 3.0 * 2.67513e8 * 0.34
+            r2p = predictions[:, 0, :] * predictions[:, 1, :] * dw_multiplier
+            # Calculate a normal distribution for r2 prime from these samples
+            r2p_mean = tf.reduce_mean(r2p, -1)
+            r2p_log_std = tf.math.log(tf.math.reduce_std(r2p, -1))
+            r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
+            loss = loss + r2p_nll
 
         """ig = tfp.distributions.InverseGamma(3, 0.15)
         lp_oef = ig.log_prob(tf.exp(oef_log_std*2))
         lp_dbv = ig.log_prob(tf.exp(dbv_log_std*2))
         nll = nll - (lp_oef + lp_dbv) """
 
-        return tf.reduce_mean(nll)
+        return tf.reduce_mean(loss)
 
     def fine_tune_loss_fn(self, y_true, y_pred):
         """
