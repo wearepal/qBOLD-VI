@@ -124,9 +124,11 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--dropout_rate', type=float, default=defaults_dict['dropout_rate'])
     parser.add_argument('--im_loss_sigma', type=float, default=defaults_dict['im_loss_sigma'])
     parser.add_argument('--use_layer_norm', type=bool, default=defaults_dict['use_layer_norm'])
+    parser.add_argument('--use_r2p_loss', type=bool, default=defaults_dict['use_r2p_loss'])
+    parser.add_argument('--multi_image_normalisation', type=bool, default=defaults_dict['multi_image_normalisation'])
+    parser.add_argument('--activation', default=defaults_dict['activation'])
+
     return parser
-
-
 
 
 if __name__ == '__main__':
@@ -146,7 +148,10 @@ if __name__ == '__main__':
         no_ft_epochs=40,
         im_loss_sigma=0.08,
         crop_size=32,
-        use_layer_norm=False
+        use_layer_norm=False,
+        activation='gelu',
+        use_r2p_loss=True,
+        multi_image_normalisation=True
     )
     parser = setup_argparser(defaults)
     args = parser.parse_args()
@@ -174,13 +179,15 @@ if __name__ == '__main__':
                              dropout_rate=wb_config.dropout_rate,
                              no_intermediate_layers=wb_config.no_intermediate_layers,
                              student_t_df=wb_config.student_t_df,
-                             initial_im_sigma=wb_config.im_loss_sigma)
+                             initial_im_sigma=wb_config.im_loss_sigma,
+                             activation_type=wb_config.activation,
+                             multi_image_normalisation=wb_config.multi_image_normalisation)
 
     model = trainer.create_encoder()
 
 
     def synth_loss(x, y):
-        return trainer.synthetic_data_loss(x, y)
+        return trainer.synthetic_data_loss(x, y, wb_config.use_r2p_loss)
 
 
     def oef_metric(x, y):
@@ -218,7 +225,7 @@ if __name__ == '__main__':
     if not os.path.exists('pt'):
         os.makedirs('pt')
 
-    model.save('pt/model.h5')
+    #model.save('pt/model.h5')
 
     trainer.save_predictions(model, baseline_data, 'pt/baseline')
     trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
@@ -278,7 +285,7 @@ if __name__ == '__main__':
                    callbacks=[scheduler_callback, WandbCallback(), elbo_callback,
                               tf.keras.callbacks.TerminateOnNaN()])
 
-    model.save('model.h5')
+    #model.save('model.h5')
 
     trainer.save_predictions(model, baseline_data, 'baseline', use_first_op=False)
     trainer.save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)

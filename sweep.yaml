@@ -7,19 +7,32 @@ metric:
 
 parameters:
   no_units:
-    values: [5, 10, 15, 20, 25]
+    min: 3
+    max: 50
   student_t_df:
-    values: [1, 3, 5, 10, 20, 100]
+    min: 1
+    max: 25
   no_pt_epochs:
     values: [3, 5, 7, 10]
   crop_size:
     values: [32, 48, 24]
   pt_lr:
-    values: [1e-2, 5e-3, 2e-3, 1e-3, 8e-4, 5e-4, 1e-4]
+    values: [2e-3, 1e-3, 8e-4, 5e-4, 1e-4, 5e-5, 1e-5]
   ft_lr:
-    values: [1e-2, 5e-3, 2e-3, 1e-3, 8e-4, 5e-4, 1e-4]
+    values: [1e-1, 5e-2, 2e-2, 1e-2, 5e-3, 2e-3, 1e-3, 8e-4, 5e-4, 1e-4]
+  activation:
+    values:
+      - elu
+      - gelu
+      - selu
+      - relu
+      - lrelu
+  use_r2p_loss:
+    values: [True, False]
+  multi_image_normalisation:
+    values: [True, False]
   dropout_rate:
-    values: [0.0, 0.025, 0.05, 0.075, 0.1]
+    value: 0.0
   no_intermediate_layers:
     value: 1
   no_ft_epochs:
