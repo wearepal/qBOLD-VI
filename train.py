@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 
-from signals import SignalGenerationLayer
+from signals import SignalGenerationLayer, create_synthetic_dataset
 
 import os
 import numpy as np
@@ -78,11 +78,14 @@ def prepare_dataset(real_data, model, crop_size=20, training=True):
     return real_dataset
 
 
-def prepare_synthetic_dataset(filename):
+def load_synthetic_dataset(filename):
     data_file = np.load(filename)
     x = data_file['x']
     y = data_file['y']
+    return x, y
 
+
+def prepare_synthetic_dataset(x, y):
     train_conv = True
     # If we're building a convolutional model, reshape the synthetic data to look like images, note we only do
     # 1x1x1 convs for pre-training
@@ -127,6 +130,9 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--use_r2p_loss', type=bool, default=defaults_dict['use_r2p_loss'])
     parser.add_argument('--multi_image_normalisation', type=bool, default=defaults_dict['multi_image_normalisation'])
     parser.add_argument('--activation', default=defaults_dict['activation'])
+    parser.add_argument('--misalign_prob', type=float, default=defaults_dict['misalign_prob'])
+    parser.add_argument('--use_blood', type=bool, default=defaults_dict['use_blood'])
+    parser.add_argument('--full_model', type=bool, default=defaults_dict['full_model'])
 
     return parser
 
@@ -151,7 +157,10 @@ if __name__ == '__main__':
         use_layer_norm=False,
         activation='gelu',
         use_r2p_loss=True,
-        multi_image_normalisation=True
+        multi_image_normalisation=True,
+        full_model=True,
+        use_blood=True,
+        misalign_prob=0.1
     )
     parser = setup_argparser(defaults)
     args = parser.parse_args()
@@ -204,7 +213,10 @@ if __name__ == '__main__':
 
     model.compile(optimiser, loss=[synth_loss, None],
                   metrics=[[oef_metric, dbv_metric, r2p_metric], None])
-    synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(args.f)
+
+    #x, y = load_synthetic_dataset(args.f)
+    x, y = create_synthetic_dataset(params, wb_config.full_model, wb_config.use_blood, wb_config.misalign_prob)
+    synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(x, y)
     model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation,
               callbacks=[tf.keras.callbacks.TerminateOnNaN()])
 
@@ -235,7 +247,7 @@ if __name__ == '__main__':
     input_3d = keras.layers.Input((None, None, 8, 11))
     input_mask = keras.layers.Input((None, None, 8, 1))
     params['simulate_noise'] = 'False'
-    sig_gen_layer = SignalGenerationLayer(params, True, True)
+    sig_gen_layer = SignalGenerationLayer(params, wb_config.full_model, wb_config.use_blood)
     full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
 
 
