@@ -225,6 +225,47 @@ class SignalGenerationLayer(keras.layers.Layer):
         return signals
 
 
+def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, variable_hct=False):
+    sig_layer = SignalGenerationLayer(params, full_model, use_blood, misaligned_prob=misaligned_prob,
+                                      variable_hct=variable_hct)
+
+    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']),
+                             maxval=float(params['oef_end']))
+    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']),
+                             maxval=float(params['dbv_end']))
+
+    xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
+    train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
+
+    if variable_hct:
+        hcts = tf.random.uniform((train_y.shape[0], 1), minval=0.34, maxval=0.34)
+
+        train_y = tf.concat([train_y, hcts], axis=-1)
+
+    # Remove any ordering from the data
+    train_y = tf.random.shuffle(train_y)
+    train_x_list = []
+    # break into chunks to avoid running out of memory
+    for i in range(10):
+        chunk_size = train_y.shape[0] // 10
+        y_subset = train_y[i * chunk_size:(i + 1) * chunk_size]
+        train_x_list.append(sig_layer(y_subset))
+
+    train_x = tf.concat(train_x_list, axis=0)
+
+    # Convert Hct and OEF into dHb (deoxyhameoglobin concentration) for extra training signals
+    # dhbs = train_y[:, 0] * (train_y[:, 2] / 0.03)
+
+    # Calculate R2' for extra training signals
+    if variable_hct:
+        r2p = sig_layer.calculate_r2p(train_y[:, 0], train_y[:, 1], train_y[:, 2])
+    else:
+        r2p = sig_layer.calculate_r2p(train_y[:, 0], train_y[:, 1], sig_layer.hct)
+
+    # Concatenate the R2'
+    train_y = tf.concat([train_y[:, :2], tf.expand_dims(r2p, -1)], -1)
+    return train_x, train_y
+
 if __name__ == '__main__':
     config = configparser.ConfigParser()
     config.read('config')
@@ -253,44 +294,6 @@ if __name__ == '__main__':
     if args.f not in ['True', 'False'] or args.b not in ['True', 'False']:
         raise ValueError('Arguments must be a valid boolean')
 
-    variable_hct = False
+    _train_x, _train_y = create_synthetic_dataset(params, args.f, args.b, 0.1, False)
 
-    sig_layer = SignalGenerationLayer(params, args.f, args.b, misaligned_prob=0.1, variable_hct=variable_hct)
-
-    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']),
-                             maxval=float(params['oef_end']))
-    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']),
-                             maxval=float(params['dbv_end']))
-
-    xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
-    train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
-
-    if variable_hct:
-        hcts = tf.random.uniform((train_y.shape[0], 1), minval=0.34, maxval=0.34)
-
-        train_y = tf.concat([train_y, hcts], axis=-1)
-
-    # Remove any ordering from the data
-    train_y = tf.random.shuffle(train_y)
-    train_x_list = []
-    # break into chunks to avoid running out of memory
-    for i in range(10):
-        chunk_size = train_y.shape[0] // 10
-        y_subset = train_y[i * chunk_size:(i + 1) * chunk_size]
-        train_x_list.append(sig_layer(y_subset))
-
-    train_x = tf.concat(train_x_list, axis=0)
-
-    # Convert Hct and OEF into dHb (deoxyhameoglobin concentration) for extra training signals
-    #dhbs = train_y[:, 0] * (train_y[:, 2] / 0.03)
-
-    # Calculate R2' for extra training signals
-    if variable_hct:
-        r2p = sig_layer.calculate_r2p(train_y[:, 0], train_y[:, 1], train_y[:, 2])
-    else:
-        r2p = sig_layer.calculate_r2p(train_y[:, 0], train_y[:, 1], sig_layer.hct)
-
-    # Concatenate the R2'
-    train_y = tf.concat([train_y[:,:2], tf.expand_dims(r2p, -1)], -1)
-
-    np.savez('synthetic_data', x=train_x, y=train_y)
+    np.savez('synthetic_data', x=_train_x, y=_train_y)
