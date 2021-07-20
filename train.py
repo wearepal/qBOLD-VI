@@ -133,6 +133,7 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--misalign_prob', type=float, default=defaults_dict['misalign_prob'])
     parser.add_argument('--use_blood', type=bool, default=defaults_dict['use_blood'])
     parser.add_argument('--full_model', type=bool, default=defaults_dict['full_model'])
+    parser.add_argument('--save_predictions', type=bool, default=False)
 
     return parser
 
@@ -142,26 +143,27 @@ if __name__ == '__main__':
     from wandb.keras import WandbCallback
 
     defaults = dict(
-        no_units=10,
+        no_units=30,
         no_intermediate_layers=1,
-        student_t_df=4,  # Switching to None will use a Gaussian error distribution
-        pt_lr=1e-3,
-        ft_lr=1e-3,
+        student_t_df=2,  # Switching to None will use a Gaussian error distribution
+        pt_lr=5e-5,
+        ft_lr=5e-3,
         kl_weight=1.0,
         smoothness_weight=1.0,
         dropout_rate=0.0,
         no_pt_epochs=5,
         no_ft_epochs=40,
         im_loss_sigma=0.08,
-        crop_size=32,
+        crop_size=16,
         use_layer_norm=False,
         activation='gelu',
-        use_r2p_loss=True,
+        use_r2p_loss=False,
         multi_image_normalisation=True,
         full_model=True,
         use_blood=True,
-        misalign_prob=0.1
+        misalign_prob=0.2
     )
+
     parser = setup_argparser(defaults)
     args = parser.parse_args()
 
@@ -238,9 +240,9 @@ if __name__ == '__main__':
         os.makedirs('pt')
 
     #model.save('pt/model.h5')
-
-    trainer.save_predictions(model, baseline_data, 'pt/baseline')
-    trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
+    if args.save_predictions:
+        trainer.save_predictions(model, baseline_data, 'pt/baseline')
+        trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.ft_lr)
 
@@ -302,6 +304,6 @@ if __name__ == '__main__':
                               tf.keras.callbacks.TerminateOnNaN()])
 
     #model.save('model.h5')
-
-    trainer.save_predictions(model, baseline_data, 'baseline', use_first_op=False)
-    trainer.save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)
+    if args.save_predictions:
+        trainer.save_predictions(model, baseline_data, 'baseline', use_first_op=False)
+        trainer.save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)
