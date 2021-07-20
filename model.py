@@ -273,9 +273,15 @@ class EncoderTrainer:
         mask = y_true[:, :, :, :, -1:]
         sigma = tf.reduce_mean(y_pred[:, :, :, :, -1:])
         y_pred = y_pred[:, :, :, :, :-1]
+
         # Normalise and mask the predictions/real data
-        y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
-        y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+        if self._multi_image_normalisation:
+            y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+            y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+        else:
+            y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
+            y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
+
         y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
         y_pred = tf.where(mask > 0, tf.math.log(y_pred), tf.zeros_like(y_pred))
 
