@@ -256,8 +256,12 @@ if __name__ == '__main__':
 
         def on_epoch_end(self, epoch, logs=None):
             data, y = next(self._iter)
-            predictions = self.model.predict(data)
-            nll = fine_tune_loss(y['predicted_images'], predictions['predicted_images'])
+            nll = 0.0
+            for i in range(10):
+                predictions = self.model.predict(data)
+                nll += fine_tune_loss(y['predicted_images'], predictions['predicted_images'])
+            nll = nll / 10.0
+
             kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'])
             smoothness = EncoderTrainer.smoothness_loss(y['predictions'], predictions['predictions'])
             metrics = {'val_nll': nll, 'val_elbo': nll+kl, 'val_elbo_smooth': nll+kl+smoothness,
