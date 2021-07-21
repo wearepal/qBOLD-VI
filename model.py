@@ -41,6 +41,7 @@ class ReparamTrickLayer(keras.layers.Layer):
 
 class EncoderTrainer:
     def __init__(self,
+                 system_params,
                  no_intermediate_layers=1,
                  no_units=10,
                  use_layer_norm=False,
@@ -58,6 +59,7 @@ class EncoderTrainer:
         self._student_t_df = student_t_df
         self._initial_im_sigma = initial_im_sigma
         self._multi_image_normalisation = multi_image_normalisation
+        self._system_params = system_params
 
     def create_encoder(self, use_conv=True, system_constants=None):
         """
@@ -195,8 +197,7 @@ class EncoderTrainer:
         elif oef_dbv_r2p == 1:
             residual = residual[:, 1]
         else:
-            dw_multiplier = (4.0 / 3.0) * math.pi * 2.64e-7 * 3.0 * 2.67513e8 * 0.34
-            r2p = means[:, 0] * dw_multiplier * means[:, 1]
+            r2p = self.calculate_r2p(means[:, 0], means[:,1])
             residual = y_true[:, 2] - r2p
 
         return tf.reduce_mean(tf.square(residual))
@@ -251,8 +252,7 @@ class EncoderTrainer:
 
             predictions = tf.stack(predictions, -1)
             predictions = tf.reshape(predictions, (-1, 2, n_samples))
-            dw_multiplier = (4.0 / 3.0) * math.pi * 2.64e-7 * 3.0 * 2.67513e8 * 0.34
-            r2p = predictions[:, 0, :] * predictions[:, 1, :] * dw_multiplier
+            r2p = self.calculate_r2p(predictions[:, 0, :], predictions[:, 1, :])
             # Calculate a normal distribution for r2 prime from these samples
             r2p_mean = tf.reduce_mean(r2p, -1)
             r2p_log_std = tf.math.log(tf.math.reduce_std(r2p, -1))
@@ -265,6 +265,17 @@ class EncoderTrainer:
         nll = nll - (lp_oef + lp_dbv) """
 
         return tf.reduce_mean(loss)
+
+    def calculate_dw(self, oef):
+        from signals import SignalGenerationLayer
+        dchi = float(self._system_params['dchi'])
+        b0 = float(self._system_params['b0'])
+        gamma = float(self._system_params['gamma'])
+        hct = float(self._system_params['hct'])
+        return SignalGenerationLayer.calculate_dw_static(oef, hct, gamma, b0, dchi)
+
+    def calculate_r2p(self, oef, dbv):
+        return self.calculate_dw(oef) * dbv
 
     def fine_tune_loss_fn(self, y_true, y_pred):
         """

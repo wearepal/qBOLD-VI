@@ -134,14 +134,11 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--use_blood', type=bool, default=defaults_dict['use_blood'])
     parser.add_argument('--full_model', type=bool, default=defaults_dict['full_model'])
     parser.add_argument('--save_predictions', type=bool, default=False)
+    parser.add_argument('--use_population_prior', type=bool, default=defaults_dict['use_population_prior'])
 
     return parser
 
-
-if __name__ == '__main__':
-    import wandb
-    from wandb.keras import WandbCallback
-
+def get_defaults():
     defaults = dict(
         no_units=30,
         no_intermediate_layers=1,
@@ -161,10 +158,16 @@ if __name__ == '__main__':
         multi_image_normalisation=True,
         full_model=True,
         use_blood=True,
-        misalign_prob=0.2
+        misalign_prob=0.2,
+        use_population_prior=False
     )
+    return defaults
 
-    parser = setup_argparser(defaults)
+if __name__ == '__main__':
+    import wandb
+    from wandb.keras import WandbCallback
+
+    parser = setup_argparser(get_defaults())
     args = parser.parse_args()
 
     wandb.init(project='qbold_inference', entity='ivorsimpson')
@@ -186,13 +189,16 @@ if __name__ == '__main__':
     else:
         system_constants = None"""
 
-    trainer = EncoderTrainer(no_units=wb_config.no_units, use_layer_norm=wb_config.use_layer_norm,
+    trainer = EncoderTrainer(system_params=params,
+                             no_units=wb_config.no_units,
+                             use_layer_norm=wb_config.use_layer_norm,
                              dropout_rate=wb_config.dropout_rate,
                              no_intermediate_layers=wb_config.no_intermediate_layers,
                              student_t_df=wb_config.student_t_df,
                              initial_im_sigma=wb_config.im_loss_sigma,
                              activation_type=wb_config.activation,
-                             multi_image_normalisation=wb_config.multi_image_normalisation)
+                             multi_image_normalisation=wb_config.multi_image_normalisation,
+                             )
 
     model = trainer.create_encoder()
 
