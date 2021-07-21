@@ -203,22 +203,6 @@ if __name__ == '__main__':
 
     model = trainer.create_encoder()
 
-
-    # Load real data for fine-tuning
-    ase_data = np.load(f'{args.d}/ASE_scan.npy')
-    ase_inf_data = np.load(f'{args.d}/ASE_INF.npy')
-    ase_sup_data = np.load(f'{args.d}/ASE_SUP.npy')
-
-    train_data = np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
-    train_dataset = prepare_dataset(train_data, model, wb_config.crop_size)
-
-    hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
-    baseline_data = np.load(f'{args.d}/baseline_ase.npy')
-
-    study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
-    study_dataset = prepare_dataset(study_data, model, 76, training=False)
-
-
     if not wb_config.use_population_prior:
         def synth_loss(x, y):
             return trainer.synthetic_data_loss(x, y, wb_config.use_r2p_loss)
@@ -245,6 +229,23 @@ if __name__ == '__main__':
         model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation,
                   callbacks=[tf.keras.callbacks.TerminateOnNaN()])
 
+
+    # Load real data for fine-tuning, using the model trained on synthetic data for priors
+    ase_data = np.load(f'{args.d}/ASE_scan.npy')
+    ase_inf_data = np.load(f'{args.d}/ASE_INF.npy')
+    ase_sup_data = np.load(f'{args.d}/ASE_SUP.npy')
+
+    train_data = np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
+    train_dataset = prepare_dataset(train_data, model, wb_config.crop_size)
+
+    hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
+    baseline_data = np.load(f'{args.d}/baseline_ase.npy')
+
+    study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
+    study_dataset = prepare_dataset(study_data, model, 76, training=False)
+
+    # If we're not using the population prior we may want to save predictions from our initial model
+    if not wb_config.use_population_prior:
         trainer.estimate_population_param_distribution(model, baseline_data)
         if args.save_predictions:
             if not os.path.exists('pt'):
