@@ -152,7 +152,7 @@ class EncoderTrainer:
         # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
         return keras.Model(inputs=[input], outputs=[output, second_net])
 
-    def build_fine_tuner(self, encoder_model, signal_generation_layer, input_im, input_mask):
+    def build_fine_tuner(self, encoder_model, signal_generation_layer, input_im, input_mask, population_prior=False):
         net = input_im
         _, predicted_distribution = encoder_model(net)
 
@@ -160,6 +160,15 @@ class EncoderTrainer:
 
         sigma_layer = tfp.layers.VariableLayer(shape=(1,), dtype=tf.dtypes.float32, activation=tf.exp,
                                                initializer=tf.keras.initializers.constant(np.log(self._initial_im_sigma)))
+
+        if population_prior:
+            pop_prior = tfp.layers.VariableLayer(shape=(4,), dtype=tf.dtypes.float32, activation=tf.exp,
+                                     initializer=tf.keras.initializers.constant([-1.47, 1.06, -0.82, -0.28]))
+            pop_prior = tf.reshape(pop_prior(predicted_distribution), (1, 1, 1, 1, 4))
+            predicted_distribution = tf.concat([predicted_distribution,
+                                                tf.ones_like(predicted_distribution) * pop_prior], -1)
+
+
 
         output = signal_generation_layer(sampled_oef_dbv)
         output = tf.concat([output, tf.ones_like(output[:, :, :, :, 0:1]) * sigma_layer(output)], -1)
@@ -314,10 +323,15 @@ class EncoderTrainer:
         return tf.reduce_sum(nll) / tf.reduce_sum(mask)
 
     @staticmethod
-    def kl_loss(true, predicted):
-        # Calculate the kullback-leibler divergence between the posterior and prior distibutions
-        q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(predicted, 4, -1)
-        p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, mask = tf.split(true, 5, -1)
+    def kl_loss(true, predicted, population_prior=False):
+        if population_prior:
+            q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, p_oef_mean, p_oef_log_std, \
+            p_dbv_mean, p_dbv_log_std = tf.split(predicted, 8, -1)
+            _, _, _, _, mask = tf.split(true, 5, -1)
+        else:
+            # Calculate the kullback-leibler divergence between the posterior and prior distibutions
+            q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(predicted, 4, -1)
+            p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, mask = tf.split(true, 5, -1)
 
         def kl(q_mean, q_log_std, p_mean, p_log_std):
             result = tf.exp(q_log_std * 2 - p_log_std * 2) + tf.square(p_mean - q_mean) * tf.exp(p_log_std * -2.0)
@@ -345,6 +359,19 @@ class EncoderTrainer:
         diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y)) + tf.reduce_mean(tf.abs(diff_z))
         return diffs
 
+    def estimate_population_param_distribution(self, model, data):
+        _, predictions = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
+        mask = data[:, :, :, :, -1:]
+        oef = predictions[:, :, :, :, 0:1] * mask
+        dbv = predictions[:, :, :, :, 1:2] * mask
+
+        mask_pix = tf.reduce_sum(mask)
+        mean_oef = tf.reduce_sum(oef) / mask_pix
+        log_std_oef = tf.math.log(tf.reduce_sum(tf.square(oef)) / mask_pix)
+        mean_dbv = tf.reduce_sum(dbv) / mask_pix
+        log_std_dbv = tf.math.log(tf.reduce_sum(tf.square(dbv)) / mask_pix)
+        print(mean_oef, log_std_oef, mean_dbv, log_std_dbv)
+
     def save_predictions(self, model, data, filename, use_first_op=True):
         import nibabel as nib
 
@@ -368,7 +395,12 @@ class EncoderTrainer:
             array_img = nib.Nifti1Image(images, affine)
             nib.save(array_img, _filename + '.nii.gz')
 
-        save_im_data(predictions[:, :, :, :, 0:1], filename + '_oef')
-        save_im_data(predictions[:, :, :, :, 1:2], filename + '_dbv')
+        oef = predictions[:, :, :, :, 0:1]
+        dbv = predictions[:, :, :, :, 1:2]
+        r2p = self.calculate_r2p(oef, dbv)
+        save_im_data(oef, filename + '_oef')
+        save_im_data(dbv, filename + '_dbv')
+        save_im_data(r2p, filename + '_r2p')
+
         # save_im_data(predictions[:, :, :, :, 2:3], filename + '_hct')
         save_im_data(log_stds, filename + '_logstds')

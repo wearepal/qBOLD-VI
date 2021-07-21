@@ -153,7 +153,7 @@ def get_defaults():
         im_loss_sigma=0.08,
         crop_size=16,
         use_layer_norm=False,
-        activation='gelu',
+        activation='relu',
         use_r2p_loss=False,
         multi_image_normalisation=True,
         full_model=True,
@@ -189,6 +189,7 @@ if __name__ == '__main__':
     else:
         system_constants = None"""
 
+
     trainer = EncoderTrainer(system_params=params,
                              no_units=wb_config.no_units,
                              use_layer_norm=wb_config.use_layer_norm,
@@ -202,31 +203,6 @@ if __name__ == '__main__':
 
     model = trainer.create_encoder()
 
-
-    def synth_loss(x, y):
-        return trainer.synthetic_data_loss(x, y, wb_config.use_r2p_loss)
-
-
-    def oef_metric(x, y):
-        return trainer.oef_metric(x, y)
-
-
-    def dbv_metric(x, y):
-        return trainer.dbv_metric(x, y)
-
-
-    def r2p_metric(x, y):
-        return trainer.r2p_metric(x, y)
-
-
-    model.compile(optimiser, loss=[synth_loss, None],
-                  metrics=[[oef_metric, dbv_metric, r2p_metric], None])
-
-    #x, y = load_synthetic_dataset(args.f)
-    x, y = create_synthetic_dataset(params, wb_config.full_model, wb_config.use_blood, wb_config.misalign_prob)
-    synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(x, y)
-    model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation,
-              callbacks=[tf.keras.callbacks.TerminateOnNaN()])
 
     # Load real data for fine-tuning
     ase_data = np.load(f'{args.d}/ASE_scan.npy')
@@ -242,13 +218,43 @@ if __name__ == '__main__':
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
     study_dataset = prepare_dataset(study_data, model, 76, training=False)
 
-    if not os.path.exists('pt'):
-        os.makedirs('pt')
+
+    if not wb_config.use_population_prior:
+        def synth_loss(x, y):
+            return trainer.synthetic_data_loss(x, y, wb_config.use_r2p_loss)
+
+
+        def oef_metric(x, y):
+            return trainer.oef_metric(x, y)
+
+
+        def dbv_metric(x, y):
+            return trainer.dbv_metric(x, y)
+
+
+        def r2p_metric(x, y):
+            return trainer.r2p_metric(x, y)
+
+
+        model.compile(optimiser, loss=[synth_loss, None],
+                      metrics=[[oef_metric, dbv_metric, r2p_metric], None])
+
+        #x, y = load_synthetic_dataset(args.f)
+        x, y = create_synthetic_dataset(params, wb_config.full_model, wb_config.use_blood, wb_config.misalign_prob)
+        synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(x, y)
+        model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation,
+                  callbacks=[tf.keras.callbacks.TerminateOnNaN()])
+
+        trainer.estimate_population_param_distribution(model, baseline_data)
+        if args.save_predictions:
+            if not os.path.exists('pt'):
+                os.makedirs('pt')
+            trainer.save_predictions(model, baseline_data, 'pt/baseline')
+            trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
+
 
     #model.save('pt/model.h5')
-    if args.save_predictions:
-        trainer.save_predictions(model, baseline_data, 'pt/baseline')
-        trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
+
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.ft_lr)
 
@@ -256,7 +262,7 @@ if __name__ == '__main__':
     input_mask = keras.layers.Input((None, None, 8, 1))
     params['simulate_noise'] = 'False'
     sig_gen_layer = SignalGenerationLayer(params, wb_config.full_model, wb_config.use_blood)
-    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
+    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask, population_prior=wb_config.use_population_prior)
 
 
     def fine_tune_loss(x, y):
@@ -264,7 +270,7 @@ if __name__ == '__main__':
 
 
     def predictions_loss(t, p):
-        return EncoderTrainer.kl_loss(t, p) * wb_config.kl_weight + \
+        return EncoderTrainer.kl_loss(t, p, wb_config.use_population_prior) * wb_config.kl_weight + \
                EncoderTrainer.smoothness_loss(t, p) * wb_config.smoothness_weight
 
     def sigma_metric(t, p):
@@ -282,7 +288,7 @@ if __name__ == '__main__':
                 nll += fine_tune_loss(y['predicted_images'], predictions['predicted_images'])
             nll = nll / 10.0
 
-            kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'])
+            kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'], wb_config.use_population_prior)
             smoothness = EncoderTrainer.smoothness_loss(y['predictions'], predictions['predictions'])
             metrics = {'val_nll': nll, 'val_elbo': nll+kl, 'val_elbo_smooth': nll+kl+smoothness,
                        'val_smoothness': smoothness, 'val_kl': kl}
@@ -308,7 +314,7 @@ if __name__ == '__main__':
     full_model.fit(train_dataset, steps_per_epoch=100, epochs=wb_config.no_ft_epochs,
                    callbacks=[scheduler_callback, WandbCallback(), elbo_callback,
                               tf.keras.callbacks.TerminateOnNaN()])
-
+    trainer.estimate_population_param_distribution(model, baseline_data)
     #model.save('model.h5')
     if args.save_predictions:
         trainer.save_predictions(model, baseline_data, 'baseline', use_first_op=False)
