@@ -10,6 +10,8 @@ import configparser
 from model import EncoderTrainer
 import tensorflow as tf
 from tensorflow import keras
+import wandb
+from wandb.keras import WandbCallback
 
 
 def get_constants(params):
@@ -109,6 +111,7 @@ def prepare_synthetic_dataset(x, y):
     synthetic_dataset = synthetic_dataset.batch(6)
     return synthetic_dataset, (valid_x, valid_y)
 
+
 def setup_argparser(defaults_dict):
     parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
 
@@ -133,10 +136,12 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--misalign_prob', type=float, default=defaults_dict['misalign_prob'])
     parser.add_argument('--use_blood', type=bool, default=defaults_dict['use_blood'])
     parser.add_argument('--full_model', type=bool, default=defaults_dict['full_model'])
-    parser.add_argument('--save_predictions', type=bool, default=False)
+    parser.add_argument('--save_directory', default=None)
     parser.add_argument('--use_population_prior', type=bool, default=defaults_dict['use_population_prior'])
+    parser.add_argument('--use_wandb', type=bool, default=defaults_dict['use_wandb'])
 
     return parser
+
 
 def get_defaults():
     defaults = dict(
@@ -159,120 +164,101 @@ def get_defaults():
         full_model=True,
         use_blood=True,
         misalign_prob=0.2,
-        use_population_prior=False
+        use_population_prior=False,
+        use_wandb=True
     )
     return defaults
 
-if __name__ == '__main__':
-    import wandb
-    from wandb.keras import WandbCallback
 
-    parser = setup_argparser(get_defaults())
-    args = parser.parse_args()
-
-    wandb.init(project='qbold_inference', entity='ivorsimpson')
-    wandb.config.update(args)
-    wb_config = wandb.config
-
+def train_model(config_dict):
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
-
-
-    if not os.path.exists(args.d):
-        raise Exception('Real data directory not found')
-
-    optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.pt_lr)
+    optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
 
     """if wb_config.use_system_constants:
         system_constants = get_constants(params)
     else:
         system_constants = None"""
 
-
     trainer = EncoderTrainer(system_params=params,
-                             no_units=wb_config.no_units,
-                             use_layer_norm=wb_config.use_layer_norm,
-                             dropout_rate=wb_config.dropout_rate,
-                             no_intermediate_layers=wb_config.no_intermediate_layers,
-                             student_t_df=wb_config.student_t_df,
-                             initial_im_sigma=wb_config.im_loss_sigma,
-                             activation_type=wb_config.activation,
-                             multi_image_normalisation=wb_config.multi_image_normalisation,
+                             no_units=config_dict.no_units,
+                             use_layer_norm=config_dict.use_layer_norm,
+                             dropout_rate=config_dict.dropout_rate,
+                             no_intermediate_layers=config_dict.no_intermediate_layers,
+                             student_t_df=config_dict.student_t_df,
+                             initial_im_sigma=config_dict.im_loss_sigma,
+                             activation_type=config_dict.activation,
+                             multi_image_normalisation=config_dict.multi_image_normalisation,
                              )
 
     model = trainer.create_encoder()
 
-    if not wb_config.use_population_prior:
+    if not config_dict.use_population_prior:
         def synth_loss(x, y):
-            return trainer.synthetic_data_loss(x, y, wb_config.use_r2p_loss)
-
+            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss)
 
         def oef_metric(x, y):
             return trainer.oef_metric(x, y)
 
-
         def dbv_metric(x, y):
             return trainer.dbv_metric(x, y)
-
 
         def r2p_metric(x, y):
             return trainer.r2p_metric(x, y)
 
-
         model.compile(optimiser, loss=[synth_loss, None],
                       metrics=[[oef_metric, dbv_metric, r2p_metric], None])
 
-        #x, y = load_synthetic_dataset(args.f)
-        x, y = create_synthetic_dataset(params, wb_config.full_model, wb_config.use_blood, wb_config.misalign_prob)
+        # x, y = load_synthetic_dataset(args.f)
+        x, y = create_synthetic_dataset(params, config_dict.full_model, config_dict.use_blood,
+                                        config_dict.misalign_prob)
         synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(x, y)
-        model.fit(synthetic_dataset, epochs=wb_config.no_pt_epochs, validation_data=synthetic_validation,
+        model.fit(synthetic_dataset, epochs=config_dict.no_pt_epochs, validation_data=synthetic_validation,
                   callbacks=[tf.keras.callbacks.TerminateOnNaN()])
 
+    if not os.path.exists(config_dict.d):
+        raise Exception('Real data directory not found')
 
     # Load real data for fine-tuning, using the model trained on synthetic data for priors
-    ase_data = np.load(f'{args.d}/ASE_scan.npy')
-    ase_inf_data = np.load(f'{args.d}/ASE_INF.npy')
-    ase_sup_data = np.load(f'{args.d}/ASE_SUP.npy')
+    ase_data = np.load(f'{config_dict.d}/ASE_scan.npy')
+    ase_inf_data = np.load(f'{config_dict.d}/ASE_INF.npy')
+    ase_sup_data = np.load(f'{config_dict.d}/ASE_SUP.npy')
 
     train_data = np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
-    train_dataset = prepare_dataset(train_data, model, wb_config.crop_size)
+    train_dataset = prepare_dataset(train_data, model, config_dict.crop_size)
 
-    hyperv_data = np.load(f'{args.d}/hyperv_ase.npy')
-    baseline_data = np.load(f'{args.d}/baseline_ase.npy')
+    hyperv_data = np.load(f'{config_dict.d}/hyperv_ase.npy')
+    baseline_data = np.load(f'{config_dict.d}/baseline_ase.npy')
 
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
     study_dataset = prepare_dataset(study_data, model, 76, training=False)
 
     # If we're not using the population prior we may want to save predictions from our initial model
-    if not wb_config.use_population_prior:
+    if not config_dict.use_population_prior:
         trainer.estimate_population_param_distribution(model, baseline_data)
-        if args.save_predictions:
-            if not os.path.exists('pt'):
-                os.makedirs('pt')
-            trainer.save_predictions(model, baseline_data, 'pt/baseline')
-            trainer.save_predictions(model, hyperv_data, 'pt/hyperv')
 
+        if config_dict.save_directory is not None:
+            if not os.path.exists(config_dict.save_directory):
+                os.makedirs(config_dict.save_directory)
+            trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/pt_baseline')
+            trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/pt_hyperv')
 
-    #model.save('pt/model.h5')
-
-
-    full_optimiser = tf.keras.optimizers.Adam(learning_rate=wb_config.ft_lr)
+    full_optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.ft_lr)
 
     input_3d = keras.layers.Input((None, None, 8, 11))
     input_mask = keras.layers.Input((None, None, 8, 1))
     params['simulate_noise'] = 'False'
-    sig_gen_layer = SignalGenerationLayer(params, wb_config.full_model, wb_config.use_blood)
-    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask, population_prior=wb_config.use_population_prior)
-
+    sig_gen_layer = SignalGenerationLayer(params, config_dict.full_model, config_dict.use_blood)
+    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask,
+                                          population_prior=config_dict.use_population_prior)
 
     def fine_tune_loss(x, y):
         return trainer.fine_tune_loss_fn(x, y)
 
-
     def predictions_loss(t, p):
-        return EncoderTrainer.kl_loss(t, p, wb_config.use_population_prior) * wb_config.kl_weight + \
-               EncoderTrainer.smoothness_loss(t, p) * wb_config.smoothness_weight
+        return EncoderTrainer.kl_loss(t, p, config_dict.use_population_prior) * config_dict.kl_weight + \
+               EncoderTrainer.smoothness_loss(t, p) * config_dict.smoothness_weight
 
     def sigma_metric(t, p):
         return tf.reduce_mean(p[:, :, :, :, -1:])
@@ -289,10 +275,11 @@ if __name__ == '__main__':
                 nll += fine_tune_loss(y['predicted_images'], predictions['predicted_images'])
             nll = nll / 10.0
 
-            kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'], wb_config.use_population_prior)
+            kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'], config_dict.use_population_prior)
             smoothness = EncoderTrainer.smoothness_loss(y['predictions'], predictions['predictions'])
-            metrics = {'val_nll': nll, 'val_elbo': nll+kl, 'val_elbo_smooth': nll+kl+smoothness,
+            metrics = {'val_nll': nll, 'val_elbo': nll + kl, 'val_elbo_smooth': nll + kl + smoothness,
                        'val_smoothness': smoothness, 'val_kl': kl}
+
             wandb.log(metrics)
 
     elbo_callback = ELBOCallback(study_dataset)
@@ -303,20 +290,57 @@ if __name__ == '__main__':
                        metrics={'predictions': [EncoderTrainer.smoothness_loss, EncoderTrainer.kl_loss],
                                 'predicted_images': sigma_metric})
 
-
     def scheduler(epoch, lr):
         if epoch < 20:
             return lr
         else:
             return lr * 0.8
 
-
     scheduler_callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-    full_model.fit(train_dataset, steps_per_epoch=100, epochs=wb_config.no_ft_epochs,
+    full_model.fit(train_dataset, steps_per_epoch=100, epochs=config_dict.no_ft_epochs,
                    callbacks=[scheduler_callback, WandbCallback(), elbo_callback,
                               tf.keras.callbacks.TerminateOnNaN()])
     trainer.estimate_population_param_distribution(model, baseline_data)
-    #model.save('model.h5')
-    if args.save_predictions:
-        trainer.save_predictions(model, baseline_data, 'baseline', use_first_op=False)
-        trainer.save_predictions(model, hyperv_data, 'hyperv', use_first_op=False)
+    # model.save('model.h5')
+    if config_dict.save_directory is not None:
+        if not os.path.exists(config_dict.save_directory):
+            os.makedirs(config_dict.save_directory)
+        trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/baseline', use_first_op=False)
+        trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/hyperv', use_first_op=False)
+
+
+if __name__ == '__main__':
+    import sys
+    import yaml
+    
+    yaml_file = None
+    # If we have a single argument and it's a yaml file, read the config from there
+    if (len(sys.argv) == 2) and (".yaml" in sys.argv[1]):
+        # Read the yaml filename
+        yaml_file = sys.argv[1]
+        # Remove it from the input arguments to also allow the default argparser
+        sys.argv = [sys.argv[0]]
+
+    cmd_parser = setup_argparser(get_defaults())
+    args = cmd_parser.parse_args()
+    args = vars(args)
+
+    if yaml_file is not None:
+        opt = yaml.load(open(yaml_file), Loader=yaml.FullLoader)
+        # Overwrite defaults with yaml config, making sure we use the correct types
+        for key, val in opt.items():
+            if args.get(key):
+                args[key] = type(args.get(key))(val)
+            else:
+                args[key] = val
+
+    if args['use_wandb']:
+        wandb.init(project='qbold_inference', entity='ivorsimpson')
+        if not args.get('name') is None:
+            wandb.run.name = args['name']
+
+        wandb.config.update(args)
+        train_model(wandb.config)
+
+    else:
+        train_model(args)
