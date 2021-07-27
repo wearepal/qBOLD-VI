@@ -241,6 +241,7 @@ def train_model(config_dict):
         if config_dict.save_directory is not None:
             if not os.path.exists(config_dict.save_directory):
                 os.makedirs(config_dict.save_directory)
+            model.save_weights(config_dict.save_directory + '/pt_model.h5')
             trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/pt_baseline')
             trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/pt_hyperv')
 
@@ -301,10 +302,11 @@ def train_model(config_dict):
                    callbacks=[scheduler_callback, WandbCallback(), elbo_callback,
                               tf.keras.callbacks.TerminateOnNaN()])
     trainer.estimate_population_param_distribution(model, baseline_data)
-    # model.save('model.h5')
+
     if config_dict.save_directory is not None:
         if not os.path.exists(config_dict.save_directory):
             os.makedirs(config_dict.save_directory)
+        model.save_weights(config_dict.save_directory + '/final_model.h5')
         trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/baseline', use_first_op=False)
         trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/hyperv', use_first_op=False)
 
@@ -312,7 +314,7 @@ def train_model(config_dict):
 if __name__ == '__main__':
     import sys
     import yaml
-    
+
     yaml_file = None
     # If we have a single argument and it's a yaml file, read the config from there
     if (len(sys.argv) == 2) and (".yaml" in sys.argv[1]):
