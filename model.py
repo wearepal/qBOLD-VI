@@ -229,7 +229,7 @@ class EncoderTrainer:
         output = tf.concat([oef, dbv], axis=-1)
         return output
 
-    def synthetic_data_loss(self, y_true_orig, y_pred_orig, use_r2p_loss):
+    def synthetic_data_loss(self, y_true_orig, y_pred_orig, use_r2p_loss, inv_gamma_alpha, inv_gamma_beta):
         # Reshape the data such that we can work with either volumes or single voxels
         y_true_orig = tf.reshape(y_true_orig, (-1, 3))
         # Backwards transform the true values (so we can define our distribution in the parameter space)
@@ -267,6 +267,12 @@ class EncoderTrainer:
             r2p_log_std = tf.math.log(tf.math.reduce_std(r2p, -1))
             r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
             loss = loss + r2p_nll
+
+        if inv_gamma_alpha*inv_gamma_beta > 0.0:
+            inv_gamma = tfp.distributions.InverseGamma(inv_gamma_alpha, inv_gamma_beta)
+            prior_loss = inv_gamma.log_prob(tf.exp(oef_log_std * 2.0))
+            prior_loss = prior_loss + inv_gamma.log_prob(tf.exp(dbv_log_std*2.0))
+            loss = loss - prior_loss
 
         """ig = tfp.distributions.InverseGamma(3, 0.15)
         lp_oef = ig.log_prob(tf.exp(oef_log_std*2))
@@ -372,7 +378,7 @@ class EncoderTrainer:
         log_std_dbv = tf.math.log(tf.reduce_sum(tf.square(dbv)) / mask_pix)
         print(mean_oef, log_std_oef, mean_dbv, log_std_dbv)
 
-    def save_predictions(self, model, data, filename, use_first_op=True):
+    def save_predictions(self, model, data, filename, transform_directory=None, use_first_op=True, qforms=None):
         import nibabel as nib
 
         predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
@@ -388,19 +394,48 @@ class EncoderTrainer:
 
         predictions = self.forward_transform(predictions)
 
-        def save_im_data(im_data, _filename):
+        def save_im_data(im_data, _filename, affine=np.eye(4)):
             images = np.split(im_data, data.shape[0], axis=0)
             images = np.squeeze(np.concatenate(images, axis=-1), 0)
-            affine = np.eye(4)
             array_img = nib.Nifti1Image(images, affine)
             nib.save(array_img, _filename + '.nii.gz')
 
         oef = predictions[:, :, :, :, 0:1]
         dbv = predictions[:, :, :, :, 1:2]
         r2p = self.calculate_r2p(oef, dbv)
-        save_im_data(oef, filename + '_oef')
-        save_im_data(dbv, filename + '_dbv')
-        save_im_data(r2p, filename + '_r2p')
+
+        if transform_directory:
+            from glob import glob
+            import os
+            transform_to_t1 = glob(transform_directory + '*/' + 'baseline_asetoT1.mat')
+            nonlin_transform_to_mni = glob(transform_directory + '*/*.anat/T1_to_MNI_nonlin_field.nii.gz')
+            mni_ims = filename + '_merged'
+            merge_cmd = 'fslmerge -t ' + mni_ims
+            for i in range(oef.shape[0]):
+                oef_im = oef[i, ...]
+                dbv_im = dbv[i, ...]
+                r2p_im = r2p[i, ...]
+                subj_ims = np.concatenate([oef_im, dbv_im, r2p_im], 0)
+                subj_im = filename + '_subj'+str(i)
+                save_im_data(subj_ims, subj_im, qforms[i, ...])
+                subj_im_mni = subj_im + 'mni'
+                # Transform
+                cmd = 'applywarp --in '+subj_im + ' --out '+subj_im_mni+ ' --warp '+ nonlin_transform_to_mni + \
+                      ' --premat ' + transform_to_t1 + ' --usessqform '
+                os.system(cmd)
+                merge_cmd = merge_cmd + ' ' + subj_im_mni
+
+            os.system(merge_cmd)
+            merged_nib = nib.load(mni_ims)
+            merged_data = merged_nib.get_fdata()
+
+            new_header = merged_nib.header.copy()
+            nib.Nifti1Image()
+
+        else:
+            save_im_data(oef, filename + '_oef')
+            save_im_data(dbv, filename + '_dbv')
+            save_im_data(r2p, filename + '_r2p')
 
         # save_im_data(predictions[:, :, :, :, 2:3], filename + '_hct')
         save_im_data(log_stds, filename + '_logstds')
