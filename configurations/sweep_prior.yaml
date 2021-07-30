@@ -1,0 +1,51 @@
+program: train.py
+method: bayes
+project: qbold_inference
+metric:
+  name: val_elbo
+  goal: minimize
+
+parameters:
+  no_units:
+    value: 30
+  student_t_df:
+    value: 2
+  no_pt_epochs:
+    values: [10, 20] #[3, 5, 7, 10, 15, 20]
+  crop_size:
+    value: 16
+  pt_lr:
+    values: [2e-3, 1e-3, 8e-4, 5e-4, 1e-4, 5e-5, 1e-5]
+  ft_lr:
+    value: 2e-3 #[5e-3, 2e-3, 1e-3, 8e-4, 5e-4, 1e-4]
+  inv_gamma_alpha:
+    min: 0.1
+    max: 10.0
+  inv_gamma_beta:
+    min: 0.1
+    max: 10.0
+  misalign_prob:
+    value: 0.0
+  use_blood:
+    values: [True]
+  activation:
+    values:
+      - relu
+  use_r2p_loss:
+    values: [False]
+  multi_image_normalisation:
+    values: [True]
+  dropout_rate:
+    value: 0.0
+  no_intermediate_layers:
+    value: 1
+  no_ft_epochs:
+    value: 40
+  use_layer_norm:
+    value: False
+  kl_weight:
+    value: 1.0
+  smoothness_weight:
+    value: 1.0
+  im_loss_sigma:
+    value: 0.08

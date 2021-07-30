@@ -138,6 +138,8 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--full_model', type=bool, default=defaults_dict['full_model'])
     parser.add_argument('--save_directory', default=None)
     parser.add_argument('--use_population_prior', type=bool, default=defaults_dict['use_population_prior'])
+    parser.add_argument('--inv_gamma_alpha', type=float, default=defaults_dict['inv_gamma_alpha'])
+    parser.add_argument('--inv_gamma_beta', type=float, default=defaults_dict['inv_gamma_beta'])
     parser.add_argument('--use_wandb', type=bool, default=defaults_dict['use_wandb'])
 
     return parser
@@ -165,7 +167,9 @@ def get_defaults():
         use_blood=True,
         misalign_prob=0.2,
         use_population_prior=False,
-        use_wandb=True
+        use_wandb=True,
+        inv_gamma_alpha=0.0,
+        inv_gamma_beta=0.0
     )
     return defaults
 
@@ -196,7 +200,8 @@ def train_model(config_dict):
 
     if not config_dict.use_population_prior:
         def synth_loss(x, y):
-            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss)
+            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss, config_dict.inv_gamma_alpha,
+                                               config_dict.inv_gamma_beta)
 
         def oef_metric(x, y):
             return trainer.oef_metric(x, y)
@@ -231,6 +236,10 @@ def train_model(config_dict):
     hyperv_data = np.load(f'{config_dict.d}/hyperv_ase.npy')
     baseline_data = np.load(f'{config_dict.d}/baseline_ase.npy')
 
+    #hyperv_qform = np.load(f'{config_dict.d}/hyperv_ase_qform.npy')
+    #baseline_qform = np.load(f'{config_dict.d}/baseline_ase_qform.npy')
+    transform_directory = None#config_dict.d + '/transforms/'
+
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
     study_dataset = prepare_dataset(study_data, model, 76, training=False)
 
@@ -242,8 +251,10 @@ def train_model(config_dict):
             if not os.path.exists(config_dict.save_directory):
                 os.makedirs(config_dict.save_directory)
             model.save_weights(config_dict.save_directory + '/pt_model.h5')
-            trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/pt_baseline')
-            trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/pt_hyperv')
+            trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/pt_baseline',
+                                     transform_directory=transform_directory)
+            trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/pt_hyperv',
+                                     transform_directory=transform_directory)
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.ft_lr)
 
@@ -307,8 +318,11 @@ def train_model(config_dict):
         if not os.path.exists(config_dict.save_directory):
             os.makedirs(config_dict.save_directory)
         model.save_weights(config_dict.save_directory + '/final_model.h5')
-        trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/baseline', use_first_op=False)
-        trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/hyperv', use_first_op=False)
+        trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/baseline',
+                                 transform_directory=transform_directory, use_first_op=False)
+
+        trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/hyperv',
+                                 transform_directory=transform_directory, use_first_op=False)
 
 
 if __name__ == '__main__':
