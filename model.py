@@ -378,7 +378,7 @@ class EncoderTrainer:
         log_std_dbv = tf.math.log(tf.reduce_sum(tf.square(dbv)) / mask_pix)
         print(mean_oef, log_std_oef, mean_dbv, log_std_dbv)
 
-    def save_predictions(self, model, data, filename, transform_directory=None, use_first_op=True, qforms=None):
+    def save_predictions(self, model, data, filename, transform_directory=None, use_first_op=True):
         import nibabel as nib
 
         predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
@@ -394,10 +394,13 @@ class EncoderTrainer:
 
         predictions = self.forward_transform(predictions)
 
-        def save_im_data(im_data, _filename, affine=np.eye(4)):
-            images = np.split(im_data, data.shape[0], axis=0)
+        def save_im_data(im_data, _filename):
+            existing_nib = nib.load(transform_directory + '/example.nii.gz')
+            new_header = existing_nib.header.copy()
+            images = np.split(im_data, im_data.shape[0], axis=0)
             images = np.squeeze(np.concatenate(images, axis=-1), 0)
-            array_img = nib.Nifti1Image(images, affine)
+            array_img = nib.Nifti1Image(images, None, header=new_header)
+
             nib.save(array_img, _filename + '.nii.gz')
 
         oef = predictions[:, :, :, :, 0:1]
@@ -405,23 +408,24 @@ class EncoderTrainer:
         r2p = self.calculate_r2p(oef, dbv)
 
         if transform_directory:
-            from glob import glob
             import os
-            transform_to_t1 = glob(transform_directory + '*/' + 'baseline_asetoT1.mat')
-            nonlin_transform_to_mni = glob(transform_directory + '*/*.anat/T1_to_MNI_nonlin_field.nii.gz')
-            mni_ims = filename + '_merged'
+            mni_ims = filename + '_merged.nii.gz'
             merge_cmd = 'fslmerge -t ' + mni_ims
+            ref_image = transform_directory + '/MNI152_T1_2mm.nii.gz'
             for i in range(oef.shape[0]):
+                lin_transform = transform_directory + '/lin'+str(i)+'.mat'
+                nonlin_transform = transform_directory + '/nonlin'+str(i)+'.nii.gz'
                 oef_im = oef[i, ...]
                 dbv_im = dbv[i, ...]
                 r2p_im = r2p[i, ...]
-                subj_ims = np.concatenate([oef_im, dbv_im, r2p_im], 0)
+                subj_ims = np.stack([oef_im, dbv_im, r2p_im], 0)
+
                 subj_im = filename + '_subj'+str(i)
-                save_im_data(subj_ims, subj_im, qforms[i, ...])
+                save_im_data(subj_ims, subj_im)
                 subj_im_mni = subj_im + 'mni'
                 # Transform
-                cmd = 'applywarp --in '+subj_im + ' --out '+subj_im_mni+ ' --warp '+ nonlin_transform_to_mni + \
-                      ' --premat ' + transform_to_t1 + ' --usessqform '
+                cmd = 'applywarp --in='+subj_im + ' --out='+subj_im_mni + ' --warp='+ nonlin_transform + \
+                      ' --premat=' + lin_transform + ' --ref=' + ref_image
                 os.system(cmd)
                 merge_cmd = merge_cmd + ' ' + subj_im_mni
 
@@ -429,8 +433,12 @@ class EncoderTrainer:
             merged_nib = nib.load(mni_ims)
             merged_data = merged_nib.get_fdata()
 
-            new_header = merged_nib.header.copy()
-            nib.Nifti1Image()
+            file_types = ['_oef', '_dbv', '_r2p']
+            for t_idx, t in enumerate(file_types):
+                t_data = merged_data[:, :, :, t_idx::3]
+                new_header = merged_nib.header.copy()
+                array_img = nib.Nifti1Image(t_data, affine=None, header=new_header)
+                nib.save(array_img, filename + t + '.nii.gz')
 
         else:
             save_im_data(oef, filename + '_oef')
