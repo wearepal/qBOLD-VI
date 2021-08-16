@@ -4,10 +4,7 @@ import math
 import numpy as np
 import argparse
 import configparser
-from tqdm import tqdm
 
-import scipy.integrate as integrate
-import scipy.special as special
 import tensorflow as tf
 
 keras = tf.keras
@@ -66,13 +63,14 @@ class SignalGenerationLayer(keras.layers.Layer):
 
         tissue_signal = self.calc_tissue(oef, dbv)
         blood_signal = tf.zeros_like(tissue_signal)
-
         if self._include_blood:
+            # Spin densities
             nb = 0.775
+            # compartment steady-state magnetization adapted from Cherukara et al code
+            # What paper does this come from?
             m_bld = 1 - (2 - tf.math.exp(- (self._tr - self._ti) / self._t1b)) * tf.math.exp(-self._ti / self._t1b)
-            vb = dbv
 
-            blood_weight = m_bld * nb * vb
+            blood_weight = m_bld * nb * dbv
             blood_signal = self.calc_blood(oef)
         else:
             blood_weight = dbv
@@ -85,11 +83,11 @@ class SignalGenerationLayer(keras.layers.Layer):
             # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
             norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
-            snr = tf.random.uniform((signal.shape[0],1), 5, 120) * tf.reshape(norm_snr, (1, 11))
+            snr = tf.random.uniform((signal.shape[0], 1), 5, 120) * tf.reshape(norm_snr, (1, 11))
             # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
-            std_dev = tf.reduce_mean(signal, 0, keepdims=True)/snr
+            std_dev = tf.reduce_mean(signal, 0, keepdims=True) / snr
             # Add noise at the correct level
-            signal = signal + tf.random.normal(signal.shape)*std_dev
+            signal = signal + tf.random.normal(signal.shape) * std_dev
 
         """
         # Normalise the data based on where tau = 0 to remove arbitrary scaling and take the log
@@ -111,34 +109,43 @@ class SignalGenerationLayer(keras.layers.Layer):
         :param dbv: A tensor containing the dbv value of each parameter pair
         :return: The signal contribution from brain tissue
         """
-        def compose(signal_idx):
+
+        def compose(arg):
             """
             :param signal_idx: The index for signal to calculate
             :return: The signal for the given index calculated using the full model
             """
-            return tf.math.exp(-dbv[signal_idx] * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
-                    1 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw[signal_idx]) * int_parts)) / (int_parts ** 2),
-                                                           int_parts) / 3) * tf.math.exp(-self._te * self._r2t)
+            dbv_i, dw_i = arg
+            # lower limit for integration, although it's defined between 0 and 1, 0 gives nans because of divide by 0
+            # in integrand....
+            a = tf.constant(1e-5, dtype=tf.float32)
+            b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
+            int_parts = tf.linspace(a, b, 2 ** 8 + 1)
+
+            return tf.math.exp(-dbv_i * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
+                    1.0 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus, 1) * dw_i) * int_parts))
+                                                 / (3.0 * tf.square(int_parts)), int_parts)) \
+                   * tf.math.exp(-self._te * self._r2t)
 
         def integral(y, x):
             """
             :param y: The y values for the sections between integral limits
             :param x: The x values of each section
-            :return: The riemann integral used to calculate a full model signal
+            :return: The integral calculated using Simpson's rule
             """
-            dx = (x[-1] - x[0]) / (int(x.shape[0]) - 1)
-            return tf.reduce_sum(tf.where(tf.math.is_nan(y[:, :-1]), tf.zeros_like(y[:, :-1]), y[:, :-1]), axis=1) * dx
+            y_a = y[:, 0:-2:2]
+            y_b = y[:, 2::2]
+            y_m = y[:, 1:-1:2]
+            h = (x[2] - x[0]) / 2.0
+            integrals = (y_a + y_b + 4.0 * y_m) * (h / 3.0)
+            return tf.reduce_sum(integrals, -1)
 
-        dw = (4 / 3) * math.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
-        tc = 1 / dw
+        dw = (4.0 / 3.0) * math.pi * self._gamma * self._b0 * self._dchi * self._hct * oef
+        tc = 1.0 / dw
         r2p = dw * dbv
 
         if self._full_model:
-            a = tf.constant(0, dtype=tf.float32)  # lower limit for integration
-            b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
-            int_parts = tf.linspace(a, b, 2 ** 5 + 1)  # riemann integral uses sum of many x values within limit to make estimate
-
-            signals = tf.vectorized_map(compose, tf.range(dw.shape[0]))
+            signals = tf.vectorized_map(compose, (dbv, dw))
         else:
             # Calculate the signals in both regimes and then sum and multiply by their validity. Although
             # this seems wasteful, but it's much easier to parallelise
@@ -161,9 +168,11 @@ class SignalGenerationLayer(keras.layers.Layer):
         :param oef: A tensor containing the the oef values from each parameter pair
         :return: The signal contribution from venous blood
         """
+        # R2b taken from Cherukara code - where is this derived from?
         r2b = 4.5 + 16.4 * self._hct + (165.2 * self._hct + 55.7) * oef ** 2
         td = 0.0045067
-        g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0) ** 2)
+        # Why is the 4pi missing from the squared term here? Missing in cherukara code as well.
+        g0 = (4 / 45) * self._hct * (1 - self._hct) * ((self._dchi * self._b0 * oef) ** 2)
 
         signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
                                                              ((self._te / td) + tf.math.sqrt(
@@ -172,124 +181,22 @@ class SignalGenerationLayer(keras.layers.Layer):
                                                                   0.25 + (((self._te + self._taus) ** 2) / td))) -
                                                               (2 * tf.math.sqrt(
                                                                   0.25 + (((self._te - self._taus) ** 2) / td)))))
-
         return signals
-
-# Original code used for generating signals before implementing tf layer
-# def calc_tissue(params, full, oef, dbv):
-#     taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
-#     gamma = float(params['gamma'])
-#     b0 = float(params['b0'])
-#     dchi = float(params['dchi'])
-#     hct = float(params['hct'])
-#     te = float(params['te'])
-#     r2t = float(params['r2t'])
-#
-#     dw = (4 / 3) * np.pi * gamma * b0 * dchi * hct * oef
-#     tc = 1 / dw
-#     r2p = dw * dbv
-#
-#     signals = np.zeros_like(taus)
-#
-#     for i, tau in enumerate(taus):
-#         if full:
-#             s = integrate.quad(lambda u: (2 + u) * np.sqrt(1 - u) *
-#                                          (1 - special.jv(0, 1.5 * (tau * dw) * u)) / (u ** 2), 0, 1)[0]
-#
-#             s = np.exp(-dbv * s / 3)
-#             s *= np.exp(-te * r2t)
-#             signals[i] = s
-#         else:
-#             if abs(tau) < tc:
-#                 s = np.exp(-r2t * te) * np.exp(- (0.3 * (r2p * tau) ** 2) / dbv)
-#             else:
-#                 s = np.exp(-r2t * te) * np.exp(dbv - (r2p * abs(tau)))
-#             signals[i] = s
-#
-#     return signals
-#
-#
-# def calc_blood(params, oef):
-#     hct = float(params['hct'])
-#     dchi = float(params['dchi'])
-#     b0 = float(params['b0'])
-#     te = float(params['te'])
-#     gamma = float(params['gamma'])
-#
-#     r2b = 4.5 + 16.4 * hct + (165.2 * hct + 55.7) * oef ** 2
-#
-#     td = 0.0045067
-#     g0 = (4 / 45) * hct * (1 - hct) * ((dchi * b0) ** 2)
-#
-#     signals = np.zeros_like(taus)
-#
-#     for i, tau in enumerate(taus):
-#         signals[i] = np.exp(-r2b * te) * np.exp(- (0.5 * (gamma ** 2) * g0 * (td ** 2)) *
-#                                                 ((te / td) + np.sqrt(0.25 + (te / td)) + 1.5 -
-#                                                  (2 * np.sqrt(0.25 + (((te + taus[i]) ** 2) / td))) -
-#                                                  (2 * np.sqrt(0.25 + (((te - taus[i]) ** 2) / td)))))
-#
-#     return signals
-#
-#
-# def generate_signal(params, full, include_blood, oef, dbv):
-#     tissue_signal = calc_tissue(params, full, oef, dbv)
-#     blood_signal = 0
-#
-#     tr = float(params['tr'])
-#     ti = float(params['ti'])
-#     t1b = float(params['t1b'])
-#     s0 = int(params['s0'])
-#
-#     if include_blood:
-#         nb = 0.775
-#
-#         m_bld = 1 - (2 - np.exp(- (tr - ti) / t1b)) * np.exp(-ti / t1b)
-#
-#         vb = dbv
-#
-#         blood_weight = m_bld * nb * vb
-#         tissue_weight = 1 - blood_weight
-#
-#         blood_signal = calc_blood(params, oef)
-#     else:
-#         blood_weight = dbv
-#         tissue_weight = 1 - blood_weight
-#
-#     return s0 * (tissue_weight * tissue_signal + blood_weight * blood_signal)
-
-# Tester function for monitoring difference between original signal generation and new tf layer
-# def test_layer_matches_python(f, b):
-#     config = configparser.ConfigParser()
-#     config.read('config')
-#     params = config['DEFAULT']
-#
-#     sig_layer = SignalGenerationLayer(params, f, b)
-#
-#     test_oef = tf.random.uniform((2,), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-#     test_dbv = tf.random.uniform((2,), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
-#
-#     test_oef_dbv = tf.stack([test_oef, test_dbv], axis=-1)
-#
-#     signal = sig_layer(test_oef_dbv)
-#
-#     signal2 = calc_tissue(params, False, test_oef[0], test_dbv[0])
-#     signal2 = np.log(signal2/signal2[2])
-#
-#     noise_weights = np.sqrt([2*i/11 for i in range(1, 12)])
-#
-#     stdd = abs(signal2.mean()) / int(params['snr'])
-#     signal2 += np.random.normal(0, stdd, signal2.size)*noise_weights
-#
-#     error = abs(tf.keras.backend.mean(signal[0] - signal2))
-#
-#     assert (error < 1e-4), "Predictions are above epislon different"
 
 
 if __name__ == '__main__':
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
+
+    if False:
+        params['simulate_noise'] = 'False'
+        inp = tf.convert_to_tensor([[[[[0.4, 0.12]]]]])
+        with tf.GradientTape() as tape:
+            tape.watch(inp)
+            o = SignalGenerationLayer(params, True, True)(inp)
+            tf.keras.backend.print_tensor(o)
+        print(tape.gradient(o, inp))
 
     parser = argparse.ArgumentParser(description='Generate ASE qBOLD signals')
 
@@ -307,12 +214,22 @@ if __name__ == '__main__':
 
     sig_layer = SignalGenerationLayer(params, args.f, args.b)
 
-    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']), maxval=float(params['oef_end']))
-    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']), maxval=float(params['dbv_end']))
+    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']),
+                             maxval=float(params['oef_end']))
+    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']),
+                             maxval=float(params['dbv_end']))
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
     train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
+
     # Remove any ordering from the data
     train_y = tf.random.shuffle(train_y)
-    train_x = sig_layer(train_y)
+    train_x_list = []
+    # break into chunks to avoid running out of memory
+    for i in range(10):
+        chunk_size = train_y.shape[0] // 10
+        y_subset = train_y[i * chunk_size:(i + 1) * chunk_size]
+        train_x_list.append(sig_layer(y_subset))
+
+    train_x = tf.concat(train_x_list, axis=0)
 
     np.savez('synthetic_data', x=train_x, y=train_y)

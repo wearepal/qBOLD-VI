@@ -1,10 +1,8 @@
 
-.idea/vcs.xml
-.idea/qBOLD-Kit.iml
-.idea/modules.xml
-.idea/misc.xml
-.idea/inspectionProfiles/profiles_settings.xml
+.idea
 .DS_Store
-params.csv
-signals.csv
+*.csv
+*.npy
+*.npz
 *.h5
+*.nii*
