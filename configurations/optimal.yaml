@@ -1,0 +1,25 @@
+no_units: 30
+no_intermediate_layers: 3
+student_t_df: 2  # Switching to None will use a Gaussian error distribution
+pt_lr: 1e-3
+ft_lr: 2e-3
+kl_weight: 1.0
+smoothness_weight: 1.0
+dropout_rate: 0.0
+no_pt_epochs: 10
+no_ft_epochs: 40
+im_loss_sigma: 0.08
+crop_size: 27
+use_layer_norm: True
+activation: 'relu'
+use_r2p_loss: False
+multi_image_normalisation: True
+full_model: True
+use_blood: True
+misalign_prob: 0.0
+use_population_prior: False
+save_directory: gating_channel_smooth1_lnorm
+name: channelwisegatingsmooth1layernorm
+inv_gamma_alpha: 22
+inv_gamma_beta: 2.5
+channelwise_gating: True

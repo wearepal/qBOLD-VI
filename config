@@ -51,7 +51,7 @@ oef_end = 0.8
 
 # DBV Range
 dbv_start = 0.002
-dbv_end = 0.2
+dbv_end = 0.25
 
 # OEF/DBV Sample Size
-sample_size = 1000
+sample_size = 2000
