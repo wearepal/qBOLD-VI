@@ -49,7 +49,8 @@ class EncoderTrainer:
                  activation_type='gelu',
                  student_t_df=None,
                  initial_im_sigma=0.08,
-                 multi_image_normalisation=True
+                 multi_image_normalisation=True,
+                 channelwise_gating=False
                  ):
         self._no_intermediate_layers = no_intermediate_layers
         self._no_units = no_units
@@ -60,6 +61,7 @@ class EncoderTrainer:
         self._initial_im_sigma = initial_im_sigma
         self._multi_image_normalisation = multi_image_normalisation
         self._system_params = system_params
+        self._channelwise_gating = channelwise_gating
 
     def create_encoder(self, use_conv=True, system_constants=None):
         """
@@ -71,14 +73,17 @@ class EncoderTrainer:
         @params: no_intermediate layers (unsigned int) : the number of extra layers apart from the first and last
         """
 
+        ki = tf.keras.initializers.HeNormal()
+
         def create_layer(_no_units, activation=self._activation_type):
             if use_conv:
-                return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), activation=activation)
+                return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), kernel_initializer=ki,
+                                           activation=activation)
             else:
                 return keras.layers.Dense(_no_units, activation=activation)
 
         def normalise_data(_data):
-            # Do the normalisation as part of the model
+            # Do the normalisation as part of the model rather than as pre-processing
             orig_shape = tf.shape(_data)
             _data = tf.reshape(_data, (-1, 11))
             _data = tf.clip_by_value(_data, 1e-2, 1e8)
@@ -110,44 +115,54 @@ class EncoderTrainer:
                 _net = tfa.layers.GroupNormalization(groups=1, axis=-1)(_net)
             return _net
 
-        # Create the initial layer
-        net = create_layer(self._no_units)(net)
-        net = add_normalizer(net)
+        def create_block(_net_in, _net2_in):
+            # Straightforward 1x1x1 convs for the pre-training network
+            conv_layer = create_layer(self._no_units)
+            _net = conv_layer(_net_in)
 
-        # If we passed in the system constants, we can apply a dense layer to then multiply them with the network
-        if system_constants is not None:
-            const_net = keras.layers.Dense(self._no_units)(system_constants)
-            net = keras.layers.Multiply()([net, keras.layers.Reshape((1, 1, 1, -1))(const_net)])
+            # Apply the same 1x1x1 conv as for stream 1 for the skip connection
+            _net2_skip = conv_layer(_net2_in)
+            # Do a residual block
+            _net2 = add_normalizer(_net2_in)
+            _net2 = tf.keras.layers.Activation(self._activation_type)(_net2)
+            _net2 = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki)(
+                _net2)
+            _net2 = add_normalizer(_net2)
+            _net2 = tf.keras.layers.Activation(self._activation_type)(_net2)
+            _net2 = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki)(
+                _net2)
 
-        # Add intermediate layers layers
+            # Choose the number of gating units (either channelwise or shared) for the skip vs. 1x1x1 convs
+            gating_units = 1
+            if self._channelwise_gating:
+                gating_units = self._no_units
+            # Estimate a gating for the predicted change
+            gating = keras.layers.Conv3D(gating_units, kernel_size=(1, 1, 1), kernel_initializer=ki,
+                                         activation='sigmoid')(_net2)
+
+            def gate_convs(ips):
+                skip, out, gate = ips
+                return skip * (1.0 - gate) + out * gate
+
+            _net2 = keras.layers.Lambda(gate_convs)([_net2_skip, _net2, gating])
+
+            return _net, _net2
+
+        # Make an initial 1x1x1 layer
+        net1 = create_layer(self._no_units)(net)
+
+        net2 = net1
+        # Create some number of convolution layers for stream 1 and gated residual blocks for stream 2
         for i in range(self._no_intermediate_layers):
-            net = add_normalizer(net)
-            net = create_layer(self._no_units)(net)
-
-        net = add_normalizer(net)
-        # Create the penultimate layer, leaving net available for more processing
-        net_penultimate = create_layer(self._no_units)(net)
-
-        if use_conv:
-            # Add a second output that uses 3x3x3 convs
-            ki = tf.keras.initializers.TruncatedNormal(stddev=0.05)  # GlorotNormal()
-            second_net = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), activation=self._activation_type,
-                                             padding='same', kernel_initializer=ki)(net)
-            second_net = add_normalizer(second_net)
-            second_net = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), activation=self._activation_type,
-                                             padding='same', kernel_initializer=ki)(second_net)
-
-            # Add this to the penultimate output from the 1x1x1 network
-            second_net = keras.layers.Add()([second_net, net_penultimate])
-        else:
-            second_net = net_penultimate
+            net1, net2 = create_block(net1, net2)
 
         # Create the final layer, which produces a mean and variance for OEF and DBV
         final_layer = create_layer(4, activation=None)
+
         # Create an output that just looks at individual voxels
-        output = final_layer(net_penultimate)
+        output = final_layer(net1)
         # Create another output that also looks at neighbourhoods
-        second_net = final_layer(second_net)
+        second_net = final_layer(net2)
 
         # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
         return keras.Model(inputs=[input], outputs=[output, second_net])
@@ -159,16 +174,16 @@ class EncoderTrainer:
         sampled_oef_dbv = ReparamTrickLayer(self)((predicted_distribution, input_mask))
 
         sigma_layer = tfp.layers.VariableLayer(shape=(1,), dtype=tf.dtypes.float32, activation=tf.exp,
-                                               initializer=tf.keras.initializers.constant(np.log(self._initial_im_sigma)))
+                                               initializer=tf.keras.initializers.constant(
+                                                   np.log(self._initial_im_sigma)))
 
         if population_prior:
             pop_prior = tfp.layers.VariableLayer(shape=(4,), dtype=tf.dtypes.float32, activation=tf.exp,
-                                     initializer=tf.keras.initializers.constant([-1.47, 1.06, -0.82, -0.28]))
+                                                 initializer=tf.keras.initializers.constant(
+                                                     [-1.47, 1.06, -0.82, -0.28]))
             pop_prior = tf.reshape(pop_prior(predicted_distribution), (1, 1, 1, 1, 4))
             predicted_distribution = tf.concat([predicted_distribution,
                                                 tf.ones_like(predicted_distribution) * pop_prior], -1)
-
-
 
         output = signal_generation_layer(sampled_oef_dbv)
         output = tf.concat([output, tf.ones_like(output[:, :, :, :, 0:1]) * sigma_layer(output)], -1)
@@ -206,7 +221,7 @@ class EncoderTrainer:
         elif oef_dbv_r2p == 1:
             residual = residual[:, 1]
         else:
-            r2p = self.calculate_r2p(means[:, 0], means[:,1])
+            r2p = self.calculate_r2p(means[:, 0], means[:, 1])
             residual = y_true[:, 2] - r2p
 
         return tf.reduce_mean(tf.square(residual))
@@ -268,10 +283,10 @@ class EncoderTrainer:
             r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
             loss = loss + r2p_nll
 
-        if inv_gamma_alpha*inv_gamma_beta > 0.0:
+        if inv_gamma_alpha * inv_gamma_beta > 0.0:
             inv_gamma = tfp.distributions.InverseGamma(inv_gamma_alpha, inv_gamma_beta)
             prior_loss = inv_gamma.log_prob(tf.exp(oef_log_std * 2.0))
-            prior_loss = prior_loss + inv_gamma.log_prob(tf.exp(dbv_log_std*2.0))
+            prior_loss = prior_loss + inv_gamma.log_prob(tf.exp(dbv_log_std * 2.0))
             loss = loss - prior_loss
 
         """ig = tfp.distributions.InverseGamma(3, 0.15)
@@ -362,7 +377,7 @@ class EncoderTrainer:
         diff_y = pred_params[:, :, :-1, :, :] - pred_params[:, :, 1:, :, :]
         diff_z = pred_params[:, :, :, :-1, :] - pred_params[:, :, :, 1:, :]
 
-        diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y)) + tf.reduce_mean(tf.abs(diff_z))
+        diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y))  # + tf.reduce_mean(tf.abs(diff_z))
         return diffs
 
     def estimate_population_param_distribution(self, model, data):
@@ -413,18 +428,18 @@ class EncoderTrainer:
             merge_cmd = 'fslmerge -t ' + mni_ims
             ref_image = transform_directory + '/MNI152_T1_2mm.nii.gz'
             for i in range(oef.shape[0]):
-                lin_transform = transform_directory + '/lin'+str(i)+'.mat'
-                nonlin_transform = transform_directory + '/nonlin'+str(i)+'.nii.gz'
+                lin_transform = transform_directory + '/lin' + str(i) + '.mat'
+                nonlin_transform = transform_directory + '/nonlin' + str(i) + '.nii.gz'
                 oef_im = oef[i, ...]
                 dbv_im = dbv[i, ...]
                 r2p_im = r2p[i, ...]
                 subj_ims = np.stack([oef_im, dbv_im, r2p_im], 0)
 
-                subj_im = filename + '_subj'+str(i)
+                subj_im = filename + '_subj' + str(i)
                 save_im_data(subj_ims, subj_im)
                 subj_im_mni = subj_im + 'mni'
                 # Transform
-                cmd = 'applywarp --in='+subj_im + ' --out='+subj_im_mni + ' --warp='+ nonlin_transform + \
+                cmd = 'applywarp --in=' + subj_im + ' --out=' + subj_im_mni + ' --warp=' + nonlin_transform + \
                       ' --premat=' + lin_transform + ' --ref=' + ref_image
                 os.system(cmd)
                 merge_cmd = merge_cmd + ' ' + subj_im_mni

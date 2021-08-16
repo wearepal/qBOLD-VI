@@ -135,6 +135,7 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--activation', default=defaults_dict['activation'])
     parser.add_argument('--misalign_prob', type=float, default=defaults_dict['misalign_prob'])
     parser.add_argument('--use_blood', type=bool, default=defaults_dict['use_blood'])
+    parser.add_argument('--channelwise_gating', type=bool, default=defaults_dict['channelwise_gating'])
     parser.add_argument('--full_model', type=bool, default=defaults_dict['full_model'])
     parser.add_argument('--save_directory', default=None)
     parser.add_argument('--use_population_prior', type=bool, default=defaults_dict['use_population_prior'])
@@ -169,7 +170,8 @@ def get_defaults():
         use_population_prior=False,
         use_wandb=True,
         inv_gamma_alpha=0.0,
-        inv_gamma_beta=0.0
+        inv_gamma_beta=0.0,
+        channelwise_gating=True
     )
     return defaults
 
@@ -178,6 +180,10 @@ def train_model(config_dict):
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
+
+    config_dict.no_intermediate_layers = max(1, config_dict.no_intermediate_layers)
+    config_dict.no_units = max(1, config_dict.no_units)
+
     optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
 
     """if wb_config.use_system_constants:
@@ -194,6 +200,7 @@ def train_model(config_dict):
                              initial_im_sigma=config_dict.im_loss_sigma,
                              activation_type=config_dict.activation,
                              multi_image_normalisation=config_dict.multi_image_normalisation,
+                             channelwise_gating=config_dict.channelwise_gating
                              )
 
     model = trainer.create_encoder()
@@ -236,9 +243,7 @@ def train_model(config_dict):
     hyperv_data = np.load(f'{config_dict.d}/hyperv_ase.npy')
     baseline_data = np.load(f'{config_dict.d}/baseline_ase.npy')
 
-    #hyperv_qform = np.load(f'{config_dict.d}/hyperv_ase_qform.npy')
-    #baseline_qform = np.load(f'{config_dict.d}/baseline_ase_qform.npy')
-    transform_directory = None#config_dict.d + '/transforms/'
+    transform_directory = config_dict.d + '/transforms/'
 
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
     study_dataset = prepare_dataset(study_data, model, 76, training=False)
@@ -289,8 +294,12 @@ def train_model(config_dict):
 
             kl = EncoderTrainer.kl_loss(y['predictions'], predictions['predictions'], config_dict.use_population_prior)
             smoothness = EncoderTrainer.smoothness_loss(y['predictions'], predictions['predictions'])
-            metrics = {'val_nll': nll, 'val_elbo': nll + kl, 'val_elbo_smooth': nll + kl + smoothness,
-                       'val_smoothness': smoothness, 'val_kl': kl}
+            metrics = {'val_nll': nll,
+                       'val_elbo': nll + kl,
+                       'val_elbo_smooth': nll + kl * config_dict.kl_weight + smoothness * config_dict.smoothness_weight,
+                       'val_smoothness': smoothness,
+                       'val_smoothness_scaled': smoothness * config_dict.smoothness_weight,
+                       'val_kl': kl}
 
             wandb.log(metrics)
 
@@ -328,6 +337,9 @@ def train_model(config_dict):
 if __name__ == '__main__':
     import sys
     import yaml
+
+    tf.random.set_seed(1)
+    np.random.seed(1)
 
     yaml_file = None
     # If we have a single argument and it's a yaml file, read the config from there
