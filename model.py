@@ -138,10 +138,11 @@ class EncoderTrainer:
                 gating_units = self._no_units
             # Estimate a gating for the predicted change
             gating = keras.layers.Conv3D(gating_units, kernel_size=(1, 1, 1), kernel_initializer=ki,
-                                         activation='sigmoid')(_net2)
+                                         activation=None)(_net2)
 
             def gate_convs(ips):
                 skip, out, gate = ips
+                gate = tf.nn.sigmoid(gate)
                 return skip * (1.0 - gate) + out * gate
 
             _net2 = keras.layers.Lambda(gate_convs)([_net2_skip, _net2, gating])
@@ -307,7 +308,7 @@ class EncoderTrainer:
     def calculate_r2p(self, oef, dbv):
         return self.calculate_dw(oef) * dbv
 
-    def fine_tune_loss_fn(self, y_true, y_pred):
+    def fine_tune_loss_fn(self, y_true, y_pred, return_mean=True):
         """
         The std_dev of 0.08 is estimated from real data
         """
@@ -340,11 +341,13 @@ class EncoderTrainer:
 
         nll = tf.reduce_sum(nll, -1, keepdims=True)
         nll = nll * mask
-
-        return tf.reduce_sum(nll) / tf.reduce_sum(mask)
+        if return_mean:
+            return tf.reduce_sum(nll) / tf.reduce_sum(mask)
+        else:
+            return nll
 
     @staticmethod
-    def kl_loss(true, predicted, population_prior=False):
+    def kl_loss(true, predicted, population_prior=False, return_mean=True):
         if population_prior:
             q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, p_oef_mean, p_oef_log_std, \
             p_dbv_mean, p_dbv_log_std = tf.split(predicted, 8, -1)
@@ -365,7 +368,10 @@ class EncoderTrainer:
         kl_op = (kl_oef + kl_dbv) * mask
         kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
         # keras.backend.print_tensor(kl_op)
-        return tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
+        if return_mean:
+            return tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
+        else:
+            return kl_op
 
     @staticmethod
     def smoothness_loss(true_params, pred_params):
@@ -393,7 +399,8 @@ class EncoderTrainer:
         log_std_dbv = tf.math.log(tf.reduce_sum(tf.square(dbv)) / mask_pix)
         print(mean_oef, log_std_oef, mean_dbv, log_std_dbv)
 
-    def save_predictions(self, model, data, filename, transform_directory=None, use_first_op=True):
+    def save_predictions(self, model, data, filename, transform_directory=None, use_first_op=True, fine_tuner_model=None,
+                         priors=None):
         import nibabel as nib
 
         predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
@@ -422,13 +429,36 @@ class EncoderTrainer:
         dbv = predictions[:, :, :, :, 1:2]
         r2p = self.calculate_r2p(oef, dbv)
 
+        if fine_tuner_model:
+            data = np.float32(data)
+            outputs = fine_tuner_model.predict([data[:, :, :, :, :-1], data[:, :, :, :, -1:]])
+            pred_dist = outputs['predictions']
+            y_pred = outputs['predicted_images']
+            mask = data[:, :, :, :, -1:]
+            y_true = data[:, :, :, :, :-1]
+            likelihood_map = self.fine_tune_loss_fn(data, y_pred, return_mean=False)
+            kl_map = self.kl_loss(np.concatenate([priors, mask], -1), pred_dist, return_mean=False)
+            likelihood_map = np.reshape(likelihood_map, data.shape[0:4]+(1,))
+            save_im_data(likelihood_map, filename + '_likelihood')
+            kl_map = np.reshape(kl_map, data.shape[0:4]+(1,))
+            save_im_data(kl_map, filename + '_kl')
+            y_pred = y_pred[:, :, :, :, :-1]
+            if self._multi_image_normalisation:
+                y_true = y_true / (np.mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+                y_pred = y_pred / (np.mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+            else:
+                y_true = y_true / (np.mean(y_true[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
+                y_pred = y_pred / (np.mean(y_pred[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
+
+            residual = np.mean(tf.abs(y_true - y_pred), -1, keepdims=True)
+            save_im_data(residual, filename + '_residual')
+
         if transform_directory:
             import os
             mni_ims = filename + '_merged.nii.gz'
             merge_cmd = 'fslmerge -t ' + mni_ims
             ref_image = transform_directory + '/MNI152_T1_2mm.nii.gz'
             for i in range(oef.shape[0]):
-                lin_transform = transform_directory + '/lin' + str(i) + '.mat'
                 nonlin_transform = transform_directory + '/nonlin' + str(i) + '.nii.gz'
                 oef_im = oef[i, ...]
                 dbv_im = dbv[i, ...]
@@ -440,7 +470,7 @@ class EncoderTrainer:
                 subj_im_mni = subj_im + 'mni'
                 # Transform
                 cmd = 'applywarp --in=' + subj_im + ' --out=' + subj_im_mni + ' --warp=' + nonlin_transform + \
-                      ' --premat=' + lin_transform + ' --ref=' + ref_image
+                      ' --ref=' + ref_image
                 os.system(cmd)
                 merge_cmd = merge_cmd + ' ' + subj_im_mni
 
