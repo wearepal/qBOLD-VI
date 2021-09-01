@@ -2,7 +2,8 @@
 # Purpose: Code for preparing real data for further analysis
 import nibabel as nib
 import numpy as np
-
+from glob import glob
+from os import system
 data_dir = '/Users/is321/Documents/Data/qBold/hyperv_data/'
 
 
@@ -66,7 +67,7 @@ def register_to_t1(image_filename):
     # Rigidly register the qbold data to the T1
     #
     import os.path as path
-    from os import system
+
     import subprocess
 
     print(image_filename)
@@ -84,42 +85,64 @@ def register_to_t1(image_filename):
     transform_matrix = dir_name + '/' + basename + 'toT1.mat'
     transform_matrix_inv = dir_name + '/' + 'T1to' + basename + '.mat'
     transform_2_roi = dir_name + '/' + basename + 'toT1_roi.mat'
+    warp_to_std = dir_name + '/' + basename + '_warp_to_std.nii.gz'
     anat_dir = dir_name + '/T1_2mm.anat/'
     seg_wm_gm_out = dir_name + '/' + basename + 'wm_gm'
+    t1_to_ase_field = dir_name + '/' + basename + '_from_t1_field.nii.gz'
+    ase_to_t1_field = dir_name + '/' + basename + '_to_t1_field.nii.gz'
+    ase_gm = dir_name + '/' + basename + '_gm.nii.gz'
+    shift_im = dir_name + '/' + basename + 'ave_shift'
 
     if not path.exists(T1_2mm_mask):
         cmd = 'fslmaths ' + T1 + ' -subsamp2 ' + T1_2mm
         system(cmd)
 
-        mask_cmd = 'fslmaths ' + T1_2mm + ' -bin -kernel box 15 -ero ' + T1_2mm_mask
+        # Create a heavily eroded mask for registering the ASE QBold data
+        mask_cmd = 'fslmaths ' + T1_2mm + ' -bin -kernel box 25 -ero ' + T1_2mm_mask
         system(mask_cmd)
 
-        mask_cmd = 'fslmaths ' + T1_2mm_mask + ' -sub 1 -mul -1 ' + T1_2mm_invmask
+        # Create an inverted mask for FSL anat - don't erode it as it disrupts the registration to std space
+        mask_cmd = 'fslmaths ' + T1_2mm + ' -bin -sub 1 -mul -1 ' + T1_2mm_invmask
         system(mask_cmd)
 
     if not path.exists(anat_dir + 'T1_to_MNI_nonlin_field.nii.gz'):
-        fsl_anat_cmd = 'fsl_anat -i ' + T1_2mm + ' -m ' + T1_2mm_invmask + ' --clobber '
+        # Note that fsl_anat needs to be modified that it still performs registration despite not using bet
+        fsl_anat_cmd = 'fsl_anat -i ' + T1_2mm + ' -m ' + T1_2mm_invmask + ' --clobber --nobet'
         system(fsl_anat_cmd)
 
-        #fsl_anat_cmd = 'fsl_anat -d ' + anat_dir + ' -m ' + T1_2mm_invmask
-        #system(fsl_anat_cmd)
+        # fsl_anat_cmd = 'fsl_anat -d ' + anat_dir + ' -m ' + T1_2mm_invmask
+        # system(fsl_anat_cmd)
 
     if not path.exists(warped_mean_image):
         flirt_cmd = ['flirt', '-in', mean_image, '-ref', T1_2mm, '-dof', '7', '-inweight', brain_mask,
                      '-omat', transform_matrix, '-searchrx', '-20', '20', '-searchry', '-20', '20', '-searchrz', '-20',
                      '20', '-finesearch', '2', '-refweight', T1_2mm_mask]
+
         subprocess.run(flirt_cmd)
 
         # Transform from the 2mm space to the ROI version in the anat directory
         cmd = 'convert_xfm -omat ' + transform_2_roi + ' -concat ' + anat_dir + 'T1_orig2roi.mat ' + transform_matrix
         system(cmd)
 
-        # Evaluate the registration by non-linearly warping the mean qbold image to MNI space
-        cmd = 'applywarp -i  ' + mean_image + ' -w ' + anat_dir + 'T1_to_MNI_nonlin_field.nii.gz ' \
-        '--premat=' + transform_2_roi + ' -o ' + warped_mean_image + ' -r ' + anat_dir + 'T1_to_MNI_nonlin.nii.gz'
+        # Create the average EPI unwarping map (created separately in SPM)
 
+        warp_type_indicator = 'B'
+        if 'hyperv_ase' in image_filename:
+            warp_type_indicator = 'H'
+        field_fnames = glob(dir_name + '/VDM/*'+warp_type_indicator+'*.nii')
+
+        # Average the two warp maps
+        cmd = 'fslmaths ' + field_fnames[0] + ' -add ' + field_fnames[1] + ' -mul 0.5 ' + shift_im
         system(cmd)
 
+        create_t1_warp_cmd = 'convertwarp -r ' + anat_dir + 'T1_to_MNI_nonlin.nii.gz' + ' -o ' + warp_to_std + ' -w ' \
+                             + anat_dir + 'T1_to_MNI_nonlin_field.nii.gz' + ' -m ' + transform_2_roi + ' -s ' + shift_im
+        system(create_t1_warp_cmd)
+
+        # Evaluate the registration by non-linearly warping the mean qbold image to MNI space
+        cmd = 'applywarp -i  ' + mean_image + ' -w ' + warp_to_std + ' -o ' + warped_mean_image + ' -r ' + \
+              anat_dir + 'T1_to_MNI_nonlin.nii.gz'
+        system(cmd)
 
     if not path.exists(seg_wm_gm_out):
         cmd = 'convert_xfm -omat ' + transform_matrix_inv + ' -inverse ' + transform_matrix
@@ -138,7 +161,21 @@ def register_to_t1(image_filename):
         cmd = 'fslmaths ' + seg_ims_out[0] + ' -add ' + seg_ims_out[1] + ' -thr 0.5 -bin ' + seg_wm_gm_out
         system(cmd)
 
-    return transform_2_roi, anat_dir + 'T1_to_MNI_nonlin_field.nii.gz'
+    if not path.exists(ase_gm):
+        cmd = "convertwarp -r " + T1_2mm + " -o " + ase_to_t1_field + " -s " + shift_im + " -m " + transform_matrix
+        system(cmd)
+
+        cmd = "invwarp -w " + ase_to_t1_field + " -o " + t1_to_ase_field + " -r " + mean_image
+        system(cmd)
+
+        cmd = "applywarp -i " +  dir_name + "/c1T1.nii -r " + mean_image + " -o " + ase_gm + " -w " + t1_to_ase_field
+        system(cmd)
+
+        cmd = "fslmaths " + ase_gm + ' -mas ' + brain_mask + ' -thr 0.5 ' + ase_gm
+        system(cmd)
+
+    return warp_to_std, ase_gm
+
 
 def prepare_image(image_filename):
     # Take the mean across time
@@ -153,6 +190,7 @@ def prepare_image(image_filename):
     mean_image = dir_name + '/tmean_' + basename + '.nii.gz'
     brain_mask = dir_name + '/mask_' + basename + '_mask.nii.gz'
     mc_images = dir_name + '/mc_' + basename + '.nii.gz'
+    ase_gm = dir_name + '/' + basename + '_gm.nii.gz'
 
     if path.exists(mc_images) == False:
         mc_cmd = ['mcflirt', '-in', image_filename, '-out', mc_images, '-refvol', '2', '-stages', '4', '-sinc_final']
@@ -172,8 +210,11 @@ def prepare_image(image_filename):
 
     mask_img = nib.load(brain_mask)
 
-    img_data = np.concatenate([img_data, np.expand_dims(mask_img.get_fdata(), -1)], -1)
-    return img_data, qform
+    gm_img = nib.load(ase_gm)
+
+    img_data = np.concatenate([img_data, np.expand_dims(gm_img.get_fdata(), -1),
+                               np.expand_dims(mask_img.get_fdata(), -1)], -1)
+    return img_data
 
 
 def prepare_data(directory, orig_filebasename):
@@ -181,7 +222,7 @@ def prepare_data(directory, orig_filebasename):
     Parse all the data in the directory and saves it as a single .npz file (we don't have *that* much data).
     @param: orig_filebase is the basename of the file that we are looking for
     """
-    from glob import glob
+
     from os import remove, path
     import tarfile
 
@@ -190,32 +231,30 @@ def prepare_data(directory, orig_filebasename):
 
     shape = None
     data = []
-    qforms = []
-    tar_file = directory + '/warp_info.tar.gz'
+    tar_file = directory + '/warp_info' + orig_filebasename + '.tar.gz'
     if path.exists(tar_file):
         remove(tar_file)
 
     tar = tarfile.open(tar_file, 'x:gz')
 
+    seg_masks_merge_cmd = 'fslmerge -t ' + directory + '/' + orig_filebasename + '_gm'
+
     for idx, im_filename in enumerate(results):
-        image_data, qform = prepare_image(im_filename)
-        lin, nonlin = register_to_t1(im_filename)
-        tar.add(lin, arcname='lin'+str(idx)+'.mat')
-        tar.add(nonlin, arcname='nonlin'+str(idx)+'.nii.gz')
+        image_data = prepare_image(im_filename)
+        nonlin, gm_im = register_to_t1(im_filename)
+        seg_masks_merge_cmd = seg_masks_merge_cmd + " " + gm_im
+        tar.add(nonlin, arcname='nonlin' + str(idx) + '.nii.gz')
         if shape is None:
             shape = image_data.shape
 
         if shape == image_data.shape:
             data.append(image_data)
 
-        qforms.append(qform)
-
     tar.close()
 
     if len(data) > 0:
         np.save(directory + '/' + orig_filebasename, data)
-        np.save(directory + '/' + orig_filebasename+'_qform', qforms)
-
+    system(seg_masks_merge_cmd)
 
 prepare_data(data_dir, "baseline_ase")
 # estimate_noise_level(data)
