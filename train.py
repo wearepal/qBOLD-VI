@@ -10,6 +10,7 @@ import configparser
 from model import EncoderTrainer
 import tensorflow as tf
 from tensorflow import keras
+import tensorflow_addons as tfa
 import wandb
 from wandb.keras import WandbCallback
 
@@ -185,6 +186,7 @@ def train_model(config_dict):
     config_dict.no_units = max(1, config_dict.no_units)
 
     optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
+    #optimiser = tfa.optimizers.MovingAverage(optimiser)
 
     """if wb_config.use_system_constants:
         system_constants = get_constants(params)
@@ -241,11 +243,23 @@ def train_model(config_dict):
     train_dataset = prepare_dataset(train_data, model, config_dict.crop_size)
 
     hyperv_data = np.load(f'{config_dict.d}/hyperv_ase.npy')
+    # Split into data with just a GM mask (for validation loss calculation) and a brain mask (for image generation)
+    hyperv_with_brain_mask = np.concatenate([hyperv_data[:, :, :, :, :-2], hyperv_data[:, :, :, :, -1:]], -1)
+    hyperv_data = hyperv_data[:, :, :, :, :-1]
     baseline_data = np.load(f'{config_dict.d}/baseline_ase.npy')
+    baseline_with_brain_mask = np.concatenate([baseline_data[:, :, :, :, :-2], baseline_data[:, :, :, :, -1:]], -1)
+    baseline_data = baseline_data[:, :, :, :, :-1]
 
-    transform_directory = config_dict.d + '/transforms/'
+    transform_dir_baseline = config_dict.d + '/transforms_baseline/'
+    transform_dir_hyperv = config_dict.d + '/transforms_hyperv/'
 
     study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
+    baseline_priors, _ = model.predict(baseline_with_brain_mask[:, :, :, :, :-1] * baseline_with_brain_mask[:, :, :, :, -1:])
+    baseline_priors = baseline_priors[:, :, :, :, 0:4]
+    hyperv_priors, _ = model.predict(hyperv_with_brain_mask[:, :, :, :, :-1] * hyperv_with_brain_mask[:, :, :, :, -1:])
+    hyperv_priors = hyperv_priors[:, :, :, :, 0:4]
+
+
     study_dataset = prepare_dataset(study_data, model, 76, training=False)
 
     # If we're not using the population prior we may want to save predictions from our initial model
@@ -256,12 +270,13 @@ def train_model(config_dict):
             if not os.path.exists(config_dict.save_directory):
                 os.makedirs(config_dict.save_directory)
             model.save_weights(config_dict.save_directory + '/pt_model.h5')
-            trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/pt_baseline',
-                                     transform_directory=transform_directory)
-            trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/pt_hyperv',
-                                     transform_directory=transform_directory)
+            trainer.save_predictions(model, baseline_with_brain_mask, config_dict.save_directory + '/pt_baseline',
+                                     transform_directory=transform_dir_baseline)
+            trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/pt_hyperv',
+                                     transform_directory=transform_dir_hyperv)
 
     full_optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.ft_lr)
+    #full_optimiser = tfa.optimizers.SWA(full_optimiser)
 
     input_3d = keras.layers.Input((None, None, 8, 11))
     input_mask = keras.layers.Input((None, None, 8, 1))
@@ -327,11 +342,13 @@ def train_model(config_dict):
         if not os.path.exists(config_dict.save_directory):
             os.makedirs(config_dict.save_directory)
         model.save_weights(config_dict.save_directory + '/final_model.h5')
-        trainer.save_predictions(model, baseline_data, config_dict.save_directory + '/baseline',
-                                 transform_directory=transform_directory, use_first_op=False)
+        trainer.save_predictions(model, baseline_with_brain_mask, config_dict.save_directory + '/baseline',
+                                 transform_directory=transform_dir_baseline, use_first_op=False, fine_tuner_model=full_model,
+                                 priors=baseline_priors)
 
-        trainer.save_predictions(model, hyperv_data, config_dict.save_directory + '/hyperv',
-                                 transform_directory=transform_directory, use_first_op=False)
+        trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/hyperv',
+                                 transform_directory=transform_dir_hyperv, use_first_op=False, fine_tuner_model=full_model,
+                                 priors=hyperv_priors)
 
 
 if __name__ == '__main__':
