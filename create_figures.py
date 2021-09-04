@@ -8,11 +8,11 @@ import matplotlib.pyplot as plt
 from train import setup_argparser, get_defaults
 
 root_exp_dir = '/Users/is321/Documents/Data/qBold/model_predictions/'
-experiment_names = ['data_norm_multi_tv0','data_norm_multi', 'data_norm_multi_tv2', 'data_norm_multi_tv3', 'data_norm_multi_tv5',
-                    'data_norm_multi_tv10']
+
 
 baseline_gm_masks = '/Users/is321/Documents/Data/qBold/hyperv_data/baseline_ase_gm.nii.gz'
 hyperv_gm_masks = '/Users/is321/Documents/Data/qBold/hyperv_data/hyperv_ase_gm.nii.gz'
+mni_image = '/Users/is321/Documents/Data/qBold/hyperv_data/MNI152_t1_2mm.nii.gz'
 
 def get_mask_data(baseline):
     if baseline:
@@ -32,6 +32,13 @@ def get_data_x(x, exp_directory, baseline=True, pt=False):
 
     filename = filename + x + '.nii.gz'
 
+    img = nib.load(filename)
+    data = img.get_fdata()
+    return data
+
+def get_tstat_x(x, exp_directory, pt=False):
+    assert pt==False
+    filename = exp_directory + '/' + x + '_mni_t_test.nii.gz'
     img = nib.load(filename)
     data = img.get_fdata()
     return data
@@ -72,6 +79,26 @@ def compare_x_conditions(x, exp_directory):
     plt.show()
 
 
+def compare_conditions_all(exp_tuple, save_name=None):
+    xs = ['oef', 'dbv', 'r2p']
+    fig, axis = plt.subplots(nrows=1, ncols=len(xs), figsize=(9, 4))
+    for idx, x in enumerate(xs):
+        ax = axis[idx]
+        data = [get_masked_x(x, root_exp_dir + '/' + exp_tuple[0], True)]
+        data.append(get_masked_x(x, root_exp_dir + '/' + exp_tuple[0], False))
+        ax.violinplot(data, showmedians=True, showextrema=False)
+        ax.set_ylabel(x)
+        set_violin_axis_style(ax, [('','baseline'), ('','hyperventilation')])
+        ax.set_ylim(np.min(data[0]), np.percentile(data[0], 98))
+    plt.suptitle(exp_tuple[1])
+    plt.tight_layout()
+
+    if save_name:
+        plt.savefig(save_name)
+    else:
+        plt.show()
+
+
 def compare_experiments_baseline_all(save_name=None):
     xs = ['oef', 'dbv', 'r2p']
     fig, axis = plt.subplots(nrows=1, ncols=len(xs), figsize=(9, 4))
@@ -85,24 +112,7 @@ def compare_experiments_baseline_all(save_name=None):
         set_violin_axis_style(ax, experiment_names)
         ax.set_ylim(np.min(data), np.percentile(data, 98))
     plt.tight_layout()
-    """
-    def adjacent_values(vals, q1, q3):
-        upper_adjacent_value = q3 + (q3 - q1) * 1.5
-        upper_adjacent_value = np.clip(upper_adjacent_value, q3, vals[-1])
 
-        lower_adjacent_value = q1 - (q3 - q1) * 1.5
-        lower_adjacent_value = np.clip(lower_adjacent_value, vals[0], q1)
-        return lower_adjacent_value, upper_adjacent_value
-    quartile1, medians, quartile3 = np.percentile(elbos, [25, 50, 75], axis=1)
-    whiskers = np.array([
-        adjacent_values(sorted_array, q1, q3)
-        for sorted_array, q1, q3 in zip(elbos, quartile1, quartile3)])
-    whiskers_min, whiskers_max = whiskers[:, 0], whiskers[:, 1]
-
-    inds = np.arange(1, len(medians) + 1)
-    ax1.plot(inds, medians, marker='o', color='k', ms=5, zorder=3)
-    ax1.vlines(inds, quartile1, quartile3, color='k', linestyle='-', lw=5)
-    ax1.vlines(inds, whiskers_min, whiskers_max, color='k', linestyle='-', lw=1)"""
     if save_name:
         plt.savefig(save_name)
     else:
@@ -115,24 +125,7 @@ def compare_experiments_masked_elbo(save_name=None):
 
     fig, ax1 = plt.subplots(nrows=1, ncols=1, figsize=(len(experiment_names)*2+1, 4))
     ax1.violinplot(elbos, showmedians=True, showextrema=False)
-    """
-    def adjacent_values(vals, q1, q3):
-        upper_adjacent_value = q3 + (q3 - q1) * 1.5
-        upper_adjacent_value = np.clip(upper_adjacent_value, q3, vals[-1])
 
-        lower_adjacent_value = q1 - (q3 - q1) * 1.5
-        lower_adjacent_value = np.clip(lower_adjacent_value, vals[0], q1)
-        return lower_adjacent_value, upper_adjacent_value
-    quartile1, medians, quartile3 = np.percentile(elbos, [25, 50, 75], axis=1)
-    whiskers = np.array([
-        adjacent_values(sorted_array, q1, q3)
-        for sorted_array, q1, q3 in zip(elbos, quartile1, quartile3)])
-    whiskers_min, whiskers_max = whiskers[:, 0], whiskers[:, 1]
-
-    inds = np.arange(1, len(medians) + 1)
-    ax1.plot(inds, medians, marker='o', color='k', ms=5, zorder=3)
-    ax1.vlines(inds, quartile1, quartile3, color='k', linestyle='-', lw=5)
-    ax1.vlines(inds, whiskers_min, whiskers_max, color='k', linestyle='-', lw=1)"""
     set_violin_axis_style(ax1, experiment_names)
     ax1.set_ylim(np.min(elbos), np.percentile(elbos, 98))
     ax1.set_ylabel('GM Voxelwise ELBO')
@@ -172,6 +165,60 @@ def show_example_slices_x(x, baseline, save_name=None):
         fig.subplots_adjust(right=0.8)
         cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
         fig.colorbar(im, cax=cbar_ax)
+    plt.suptitle(x)
+    if save_name:
+        plt.savefig(save_name)
+    else:
+        plt.show()
+
+
+def show_t_statistcs(x, save_name=None):
+    from post_analysis import calculate_t_test, smooth_data
+    subj_indicies = [0, 3, 4]
+    slice_indicies = [45, 40, 35, 30]
+    fig = plt.figure(figsize=(len(experiment_names)*2 + 1, len(slice_indicies)*1.6))
+    axis = fig.subplots(nrows=len(slice_indicies), ncols=len(experiment_names))
+    vmin = 2.5
+    vmax = 5
+    mni = nib.load(mni_image)
+    mni_data = mni.get_fdata()
+
+    for idx, exp_name in enumerate(experiment_names):
+        exp_dir = root_exp_dir + '/' + exp_name[0]
+        #smooth_data(exp_dir, 6)
+        #calculate_t_test(exp_dir)
+        data = get_tstat_x(x, exp_dir)
+        for slice_idx in range(len(slice_indicies)):
+            ax = axis[slice_idx, idx]
+            slice = data[15:-15, 10:-10, slice_indicies[slice_idx], 0]
+            mni_slice = mni_data[15:-15, 10:-10, slice_indicies[slice_idx]]
+
+            ax.imshow(mni_slice, cmap='gray')
+
+            slice_pos_mask = (slice > vmin) * 1.0
+            slice_pos = slice * slice_pos_mask
+            ax.imshow(slice_pos, alpha=slice_pos_mask, vmin=vmin, vmax=vmax, cmap='hot')
+            im = ax.imshow(slice_pos, alpha=0.0, vmin=vmin, vmax=vmax, cmap='hot')
+
+            slice_neg_mask = (slice < -vmin) * 1.0
+            slice_neg = slice * slice_neg_mask
+            ax.imshow(slice_neg, alpha=slice_neg_mask, vmin=-vmax, vmax=-vmin, cmap='cool')
+            im2 = ax.imshow(slice_neg, alpha=0.0, vmin=-vmax, vmax=-vmin, cmap='cool')
+            ax.axis('off')
+            if slice_idx == 0:
+                ax.set_title(exp_name[1])
+        fig.tight_layout()
+        fig.subplots_adjust(right=0.88)
+        cbar_ax = fig.add_axes([0.9, 0.55, 0.05, 0.35])
+        cbar = fig.colorbar(im, cax=cbar_ax)
+        cbar.set_alpha(1)
+        cbar.draw_all()
+
+        cbar_ax = fig.add_axes([0.9, 0.1, 0.05, 0.35])
+        cbar = fig.colorbar(im2, cax=cbar_ax)
+        cbar.set_alpha(1)
+        cbar.draw_all()
+        plt.suptitle(x + ' t-statistic')
     if save_name:
         plt.savefig(save_name)
     else:
@@ -193,12 +240,63 @@ if False:
     # show_example_slices_x('dbv', True, save_name='multi_single_examples.pdf')
     compare_experiments_masked_elbo(save_name='likelihood_elbo.pdf')
 
-# Likelihood experiments
+    show_t_statistcs('oef', save_name='likelihood_tstat_oef.pdf')
+    show_t_statistcs('dbv', save_name='likelihood_tstat_dbv.pdf')
+    show_t_statistcs('r2p', save_name='likelihood_tstat_r2p.pdf')
+
+# Forward model experiments
 if False:
     experiment_names = [('nobloodnofull_tv1', 'NB/A'), ('nofull_tv1', 'B/A'), ('noblood_tv1', 'NB/F'), ('data_norm_multi', 'B/F')]
 
     compare_experiments_baseline_all(save_name='forwardmodels_stats.pdf')
     # show_example_slices_x('dbv', True, save_name='multi_single_examples.pdf')
     compare_experiments_masked_elbo(save_name='forwardmodels_elbo.pdf')
-#compare_x_conditions('r2p', root_exp_dir + '/' + experiment_names[0])
 
+    experiment_names = [('noblood_tv1', 'NB/F'),
+                        ('data_norm_multi', 'B/F')]
+    compare_conditions_all(experiment_names[0], 'nbf_condition_dist.pdf')
+    compare_conditions_all(experiment_names[1], 'bf_condition_dist.pdf')
+
+    show_t_statistcs('oef', save_name='forwardmodels_tstat_oef.pdf')
+    show_t_statistcs('dbv', save_name='forwardmodels_tstat_dbv.pdf')
+    show_t_statistcs('r2p', save_name='forwardmodels_tstat_r2p.pdf')
+#compare_x_conditions('r2p', root_exp_dir + '/' + experiment_names[0])
+# Smoothness
+if False:
+    experiment_names = [('data_norm_multi_tv0', 'TV=0'),
+                        ('data_norm_multi', 'TV=1'),
+                        ('data_norm_multi_tv2', 'TV=2'),
+                        ('data_norm_multi_tv5', 'TV=5')]
+    show_t_statistcs('oef', save_name='smoothness_tstat_oef.pdf')
+    show_t_statistcs('dbv', save_name='smoothness_tstat_dbv.pdf')
+    show_t_statistcs('r2p', save_name='smoothness_tstat_r2p.pdf')
+
+    show_example_slices_x('dbv', True, save_name='smoothness_examples_dbv.pdf')
+    show_example_slices_x('oef', True, save_name='smoothness_examples_oef.pdf')
+    show_example_slices_x('r2p', True, save_name='smoothness_examples_r2p.pdf')
+
+if True:
+    def create_pt_exp(old_dir, new_dir):
+        from glob import  glob
+        if not os.path.exists(new_dir):
+            os.mkdir(new_dir)
+        pt_files = glob(old_dir+'/pt_*')
+        for pt_file in pt_files:
+            bname = os.path.basename(pt_file)
+            bname = bname[3:]
+            target_filename = new_dir + '/' + bname
+            if not os.path.exists(target_filename):
+                cmd = 'cp '+pt_file + ' ' + target_filename
+                os.system(cmd)
+    create_pt_exp(root_exp_dir+'/'+'optimal2', root_exp_dir+'/'+'optimal2_pt')
+    experiment_names = [('wls_clip', 'WLS'),
+                        ('optimal2_pt', 'Synth'),
+                        ('optimal2_tv0', 'VI'),
+                        ('optimal2', 'VI + TV')]
+    show_t_statistcs('oef', save_name='vi_synth_tstat_oef.pdf')
+    show_t_statistcs('dbv', save_name='vi_synth_tstat_dbv.pdf')
+    show_t_statistcs('r2p', save_name='vi_synth_tstat_r2p.pdf')
+
+    show_example_slices_x('dbv', True, save_name='vi_syth_wls_examples_dbv.pdf')
+    show_example_slices_x('oef', True, save_name='vi_syth_wls_examples_oef.pdf')
+    show_example_slices_x('r2p', True, save_name='vi_syth_wls_examples_r2p.pdf')
