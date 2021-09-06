@@ -142,7 +142,10 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--use_population_prior', type=bool, default=defaults_dict['use_population_prior'])
     parser.add_argument('--inv_gamma_alpha', type=float, default=defaults_dict['inv_gamma_alpha'])
     parser.add_argument('--inv_gamma_beta', type=float, default=defaults_dict['inv_gamma_beta'])
+    parser.add_argument('--gate_offset', type=float, default=defaults_dict['gate_offset'])
+    parser.add_argument('--resid_init_std', type=float, default=defaults_dict['resid_init_std'])
     parser.add_argument('--use_wandb', type=bool, default=defaults_dict['use_wandb'])
+    parser.add_argument('--infer_inv_gamma', type=bool, default=defaults_dict['infer_inv_gamma'])
 
     return parser
 
@@ -172,7 +175,10 @@ def get_defaults():
         use_wandb=True,
         inv_gamma_alpha=0.0,
         inv_gamma_beta=0.0,
-        channelwise_gating=True
+        gate_offset=0.0,
+        resid_init_std=1e-1,
+        channelwise_gating=True,
+        infer_inv_gamma=False
     )
     return defaults
 
@@ -202,10 +208,11 @@ def train_model(config_dict):
                              initial_im_sigma=config_dict.im_loss_sigma,
                              activation_type=config_dict.activation,
                              multi_image_normalisation=config_dict.multi_image_normalisation,
-                             channelwise_gating=config_dict.channelwise_gating
+                             channelwise_gating=config_dict.channelwise_gating,
+                             infer_inv_gamma=config_dict.infer_inv_gamma
                              )
 
-    model = trainer.create_encoder()
+    model = trainer.create_encoder(gate_offset=config_dict.gate_offset, resid_init_std=config_dict.resid_init_std)
 
     if not config_dict.use_population_prior:
         def synth_loss(x, y):
@@ -221,8 +228,23 @@ def train_model(config_dict):
         def r2p_metric(x, y):
             return trainer.r2p_metric(x, y)
 
+        def oef_alpha_metric(x, y):
+            return y[0, 0, 0, 0, 4]
+
+        def oef_beta_metric(x, y):
+            return y[0, 0, 0, 0, 5]
+
+        def dbv_alpha_metric(x, y):
+            return y[0, 0, 0, 0, 6]
+
+        def dbv_beta_metric(x, y):
+            return y[0, 0, 0, 0, 7]
+
+        metrics = [oef_metric, dbv_metric, r2p_metric]
+        if config_dict.infer_inv_gamma:
+            metrics.extend([oef_alpha_metric, oef_beta_metric, dbv_beta_metric, dbv_alpha_metric])
         model.compile(optimiser, loss=[synth_loss, None],
-                      metrics=[[oef_metric, dbv_metric, r2p_metric], None])
+                      metrics=[metrics, None])
 
         # x, y = load_synthetic_dataset(args.f)
         x, y = create_synthetic_dataset(params, config_dict.full_model, config_dict.use_blood,
