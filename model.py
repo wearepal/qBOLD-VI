@@ -7,7 +7,6 @@ import tensorflow_probability as tfp
 import math
 import numpy as np
 
-
 def logit(signal):
     # Inverse sigmoid function
     return tf.math.log(signal / (1.0 - signal))
@@ -50,7 +49,8 @@ class EncoderTrainer:
                  student_t_df=None,
                  initial_im_sigma=0.08,
                  multi_image_normalisation=True,
-                 channelwise_gating=False
+                 channelwise_gating=False,
+                 infer_inv_gamma=False
                  ):
         self._no_intermediate_layers = no_intermediate_layers
         self._no_units = no_units
@@ -62,8 +62,9 @@ class EncoderTrainer:
         self._multi_image_normalisation = multi_image_normalisation
         self._system_params = system_params
         self._channelwise_gating = channelwise_gating
+        self._infer_inv_gamma = infer_inv_gamma
 
-    def create_encoder(self, use_conv=True, system_constants=None):
+    def create_encoder(self, use_conv=True, system_constants=None, gate_offset=0.0, resid_init_std=1e-1):
         """
         @param: use_conv (Boolean) : whether to use a convolution (1x1x1) or MLP model
         @params: system_constants (array): If not None, perform a dense transformation and multiply with first level representation
@@ -74,6 +75,7 @@ class EncoderTrainer:
         """
 
         ki = tf.keras.initializers.HeNormal()
+        ki_resid = tf.keras.initializers.RandomNormal(stddev=resid_init_std)
 
         def create_layer(_no_units, activation=self._activation_type):
             if use_conv:
@@ -125,11 +127,11 @@ class EncoderTrainer:
             # Do a residual block
             _net2 = add_normalizer(_net2_in)
             _net2 = tf.keras.layers.Activation(self._activation_type)(_net2)
-            _net2 = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki)(
+            _net2 = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki_resid)(
                 _net2)
             _net2 = add_normalizer(_net2)
             _net2 = tf.keras.layers.Activation(self._activation_type)(_net2)
-            _net2 = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki)(
+            _net2 = keras.layers.Conv3D(self._no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki_resid)(
                 _net2)
 
             # Choose the number of gating units (either channelwise or shared) for the skip vs. 1x1x1 convs
@@ -142,7 +144,7 @@ class EncoderTrainer:
 
             def gate_convs(ips):
                 skip, out, gate = ips
-                gate = tf.nn.sigmoid(gate)
+                gate = tf.nn.sigmoid(gate + gate_offset)
                 return skip * (1.0 - gate) + out * gate
 
             _net2 = keras.layers.Lambda(gate_convs)([_net2_skip, _net2, gating])
@@ -162,6 +164,13 @@ class EncoderTrainer:
 
         # Create an output that just looks at individual voxels
         output = final_layer(net1)
+
+        if self._infer_inv_gamma:
+            hyper_prior_layer = tfp.layers.VariableLayer(shape=(4,), dtype=tf.dtypes.float32, activation=tf.exp,
+                                                   initializer=tf.keras.initializers.constant(
+                                                       np.log([20.0, 2.5, 20, 2.5])))
+            output = tf.concat([output, tf.ones_like(output)[:, :, :, :, :4] * hyper_prior_layer(output)], -1)
+
         # Create another output that also looks at neighbourhoods
         second_net = final_layer(net2)
 
@@ -194,7 +203,7 @@ class EncoderTrainer:
 
     def transform_std(self, pred_stds):
         # Transform the predicted std-dev to the correct range
-        return tf.tanh(pred_stds) * 3.0
+        return (tf.tanh(pred_stds) * 2.0) - 1.0
 
     def forward_transform(self, logits):
         # Define the forward transform of the predicted parameters to OEF/DBV
@@ -212,6 +221,8 @@ class EncoderTrainer:
         """
         # Reshape the data such that we can work with either volumes or single voxels
         y_true = tf.reshape(y_true, (-1, 3))
+        if self._infer_inv_gamma:
+            y_pred, _ = tf.split(y_pred, 2, -1)
         y_pred = tf.reshape(y_pred, (-1, 4))
         # keras.backend.print_tensor(tf.reduce_mean(tf.exp(y_pred[:,1])))
         means = tf.stack([y_pred[:, 0], y_pred[:, 2]], -1)
@@ -250,6 +261,8 @@ class EncoderTrainer:
         y_true_orig = tf.reshape(y_true_orig, (-1, 3))
         # Backwards transform the true values (so we can define our distribution in the parameter space)
         y_true = self.backwards_transform(y_true_orig[:, 0:2])
+        if self._infer_inv_gamma:
+            y_pred_orig, inv_gamma_params = tf.split(y_pred_orig, 2, axis=-1)
         y_pred = tf.reshape(y_pred_orig, (-1, 4))
 
         oef_mean = y_pred[:, 0]
@@ -284,10 +297,16 @@ class EncoderTrainer:
             r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
             loss = loss + r2p_nll
 
-        if inv_gamma_alpha * inv_gamma_beta > 0.0:
-            inv_gamma = tfp.distributions.InverseGamma(inv_gamma_alpha, inv_gamma_beta)
-            prior_loss = inv_gamma.log_prob(tf.exp(oef_log_std * 2.0))
-            prior_loss = prior_loss + inv_gamma.log_prob(tf.exp(dbv_log_std * 2.0))
+        if (inv_gamma_alpha * inv_gamma_beta > 0.0) or self._infer_inv_gamma:
+            if self._infer_inv_gamma:
+                inv_gamma_params = inv_gamma_params[0,0,0,0,:]
+                inv_gamma_oef = tfp.distributions.InverseGamma(inv_gamma_params[0], inv_gamma_params[1])
+                inv_gamma_dbv = tfp.distributions.InverseGamma(inv_gamma_params[2], inv_gamma_params[3])
+            else:
+                inv_gamma_oef = inv_gamma_dbv = tfp.distributions.InverseGamma(inv_gamma_alpha, inv_gamma_beta)
+
+            prior_loss = inv_gamma_oef.log_prob(tf.exp(oef_log_std * 2.0))
+            prior_loss = prior_loss + inv_gamma_dbv.log_prob(tf.exp(dbv_log_std * 2.0))
             loss = loss - prior_loss
 
         """ig = tfp.distributions.InverseGamma(3, 0.15)
@@ -378,12 +397,20 @@ class EncoderTrainer:
         # Define a total variation smoothness term for the predicted means
         q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std = tf.split(pred_params, 4, -1)
         pred_params = tf.concat([q_oef_mean, q_dbv_mean], -1)
+        _, _, _, _, mask = tf.split(true_params, 5, -1)
 
         diff_x = pred_params[:, :-1, :, :, :] - pred_params[:, 1:, :, :, :]
-        diff_y = pred_params[:, :, :-1, :, :] - pred_params[:, :, 1:, :, :]
-        diff_z = pred_params[:, :, :, :-1, :] - pred_params[:, :, :, 1:, :]
+        x_mask = tf.logical_and(mask[:, :-1, :, :, :] > 0.0, mask[:, 1:, :, :, :] > 0.0)
+        diff_x = tf.where(x_mask, diff_x, tf.zeros_like(diff_x))
 
-        diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y))  # + tf.reduce_mean(tf.abs(diff_z))
+        diff_y = pred_params[:, :, :-1, :, :] - pred_params[:, :, 1:, :, :]
+        y_mask = tf.logical_and(mask[:, :, :-1, :, :] > 0.0, mask[:, :, 1:, :, :] > 0.0)
+        diff_y = tf.where(y_mask, diff_y, tf.zeros_like(diff_y))
+
+        #diff_z = pred_params[:, :, :, :-1, :] - pred_params[:, :, :, 1:, :]
+        #diffs = tf.reduce_mean(tf.abs(diff_x)) + tf.reduce_mean(tf.abs(diff_y))
+        diffs = tf.reduce_sum(tf.abs(diff_x)) + tf.reduce_sum(tf.abs(diff_y))  # + tf.reduce_mean(tf.abs(diff_z))
+        diffs = diffs / tf.reduce_sum(mask)
         return diffs
 
     def estimate_population_param_distribution(self, model, data):
@@ -406,6 +433,8 @@ class EncoderTrainer:
         predictions, predictions2 = model.predict(data[:, :, :, :, :-1] * data[:, :, :, :, -1:])
         if use_first_op is False:
             predictions = predictions2
+        elif self._infer_inv_gamma:
+            predictions, inv_gamma_params = tf.split(predictions, 2, axis=-1)
 
         # Get the log stds, but don't transform them. Their meaning is complicated because of the forward transformation
         log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
@@ -478,17 +507,17 @@ class EncoderTrainer:
             merged_nib = nib.load(mni_ims)
             merged_data = merged_nib.get_fdata()
 
-            file_types = ['_oef', '_dbv', '_r2p']
+            file_types = ['_oef_mni', '_dbv_mni', '_r2p_mni']
             for t_idx, t in enumerate(file_types):
                 t_data = merged_data[:, :, :, t_idx::3]
                 new_header = merged_nib.header.copy()
                 array_img = nib.Nifti1Image(t_data, affine=None, header=new_header)
                 nib.save(array_img, filename + t + '.nii.gz')
 
-        else:
-            save_im_data(oef, filename + '_oef')
-            save_im_data(dbv, filename + '_dbv')
-            save_im_data(r2p, filename + '_r2p')
+
+        save_im_data(oef, filename + '_oef')
+        save_im_data(dbv, filename + '_dbv')
+        save_im_data(r2p, filename + '_r2p')
 
         # save_im_data(predictions[:, :, :, :, 2:3], filename + '_hct')
         save_im_data(log_stds, filename + '_logstds')
