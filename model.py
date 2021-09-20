@@ -67,7 +67,8 @@ class EncoderTrainer:
                  use_population_prior=True,
                  mog_components=1,
                  no_samples=1,
-                 heteroscedastic_noise=True
+                 heteroscedastic_noise=True,
+                 predict_log_data=True
                  ):
         self._no_intermediate_layers = no_intermediate_layers
         self._no_units = no_units
@@ -89,6 +90,7 @@ class EncoderTrainer:
         self._dbv_range = 0.3
         self._min_dbv = 0.001
         self._heteroscedastic_noise = heteroscedastic_noise
+        self._predict_log_data = predict_log_data
 
     def create_encoder(self, use_conv=True, system_constants=None, gate_offset=0.0, resid_init_std=1e-1):
         """
@@ -121,9 +123,12 @@ class EncoderTrainer:
             else:
                 _data = _data / tf.reduce_mean(_data[:, 2:3], -1, keepdims=True)
             # Take the logarithm
-            _data = tf.math.log(_data)
-            _data = tf.reshape(_data, orig_shape)
-            return _data
+            log_data = tf.math.log(_data)
+            log_data = tf.reshape(log_data, orig_shape)
+
+            #_data = tf.reshape(_data, orig_shape)
+            #return tf.concat([_data, log_data], -1)
+            return log_data
 
         if use_conv:
             input = keras.layers.Input(shape=(None, None, None, 11), ragged=False)
@@ -479,8 +484,9 @@ class EncoderTrainer:
             y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
             y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
 
-        y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
-        y_pred = tf.where(mask > 0, tf.math.log(y_pred), tf.zeros_like(y_pred))
+        if self._predict_log_data:
+            y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
+            y_pred = tf.where(mask > 0, tf.math.log(y_pred), tf.zeros_like(y_pred))
 
         # Calculate the residual difference between our normalised data
         residual = y_true[:, :, :, :, :-1] - y_pred
