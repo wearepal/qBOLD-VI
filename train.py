@@ -32,8 +32,10 @@ def get_constants(params):
     return consts
 
 def prepare_dataset(real_data, model, crop_size=20, training=True):
-    # Prepare the real data
-    real_data = np.float32(real_data[:, 10:-10, 10:-10, :, :])
+    # Prepare the real data, crop out more in the x-dimension to avoid risk of lots of empty voxels
+    real_data = np.float32(real_data[:, 17:-17, 10:-10, :, :])
+
+    _crop_size = [min(crop_size, real_data.shape[1]), min(crop_size, real_data.shape[2])]
     # Mask the data and make some predictions to provide a prior distribution
     predicted_distribution, _, _ = model.predict(real_data[:, :, :, :, :-1] * real_data[:, :, :, :, -1:])
 
@@ -54,15 +56,15 @@ def prepare_dataset(real_data, model, crop_size=20, training=True):
 
         # concatenate to crop
         crop_data = tf.concat([data, predicted_distribution], -1)
-        crop_data = tf.image.random_crop(value=crop_data, size=(crop_size, crop_size, crop_data.shape[-1]))
+        crop_data = tf.image.random_crop(value=crop_data, size=_crop_size + crop_data.shape[-1:])
 
         # Separate out again
         predicted_distribution = crop_data[:, :, -predicted_distribution.shape.as_list()[-1]:]
         predicted_distribution = tf.reshape(predicted_distribution,
-                                            [crop_size, crop_size] + predicted_distribution_shape[-2:])
+                                            _crop_size + predicted_distribution_shape[-2:])
 
         data = crop_data[:, :, :data.shape[-1]]
-        data = tf.reshape(data, [crop_size, crop_size] + data_shape[-2:])
+        data = tf.reshape(data, _crop_size + data_shape[-2:])
         mask = data[:, :, :, -1:]
 
         data = data[:, :, :, :-1] * data[:, :, :, -1:]
@@ -152,6 +154,8 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--use_mvg', type=bool, default=defaults_dict['use_mvg'])
     parser.add_argument('--uniform_prop', type=float, default=defaults_dict['uniform_prop'])
     parser.add_argument('--use_swa', type=bool, default=defaults_dict['use_swa'])
+    parser.add_argument('--adamw_decay', type=float, default=defaults_dict['adamw_decay'])
+    parser.add_argument('--predict_log_data', type=bool, default=defaults_dict['predict_log_data'])
 
     return parser
 
@@ -188,6 +192,8 @@ def get_defaults():
         use_mvg=False,
         uniform_prop=0.1,
         use_swa=True,
+        adamw_decay=1e-4,
+        predict_log_data=True
     )
     return defaults
 
@@ -202,7 +208,7 @@ def train_model(config_dict):
 
     optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
     if config_dict.use_swa:
-        optimiser = tfa.optimizers.AdamW(weight_decay=1e-4, learning_rate=config_dict.pt_lr)
+        optimiser = tfa.optimizers.AdamW(weight_decay=2e-4, learning_rate=config_dict.pt_lr)
         optimiser = tfa.optimizers.SWA(optimiser, start_averaging=100, average_period=10)
     #optimiser = tfa.optimizers.MovingAverage(optimiser)
 
@@ -223,7 +229,8 @@ def train_model(config_dict):
                              channelwise_gating=config_dict.channelwise_gating,
                              infer_inv_gamma=config_dict.infer_inv_gamma,
                              use_population_prior=config_dict.use_population_prior,
-                             use_mvg=config_dict.use_mvg
+                             use_mvg=config_dict.use_mvg,
+                             predict_log_data=config_dict.predict_log_data
                              )
 
     model = trainer.create_encoder(gate_offset=config_dict.gate_offset, resid_init_std=config_dict.resid_init_std)
@@ -337,7 +344,7 @@ def train_model(config_dict):
             return value
 
     if config_dict.use_swa:
-        full_optimiser = tfa.optimizers.AdamW(weight_decay=LRSchedule(1e-4),
+        full_optimiser = tfa.optimizers.AdamW(weight_decay=LRSchedule(config_dict.adamw_decay),
                                               learning_rate=LRSchedule(config_dict.ft_lr))
         full_optimiser = tfa.optimizers.SWA(full_optimiser)
     else:
