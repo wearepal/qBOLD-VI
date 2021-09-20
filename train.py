@@ -209,7 +209,7 @@ def train_model(config_dict):
     optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
     if config_dict.use_swa:
         optimiser = tfa.optimizers.AdamW(weight_decay=2e-4, learning_rate=config_dict.pt_lr)
-        optimiser = tfa.optimizers.SWA(optimiser, start_averaging=100, average_period=10)
+        optimiser = tfa.optimizers.SWA(optimiser, start_averaging=100*20, average_period=50)
     #optimiser = tfa.optimizers.MovingAverage(optimiser)
 
     """if wb_config.use_system_constants:
@@ -334,19 +334,24 @@ def train_model(config_dict):
             self.steps_per_epoch = 100
 
         def __call__(self, step):
-            const_until = 20 * self.steps_per_epoch
+            const_until = 0.0 * self.steps_per_epoch
             x_recomp = tf.cast(tf.convert_to_tensor(step), tf.float32)
             c = tf.cast(const_until, x_recomp.dtype.base_dtype)
 
             op = tf.cast(self.initial_learning_rate, tf.float32) * \
                  tf.pow(tf.cast(0.9, tf.float32), tf.cast((1.0 + (x_recomp - c) / self.steps_per_epoch), tf.float32))
+
+            final_lr = self.initial_learning_rate / 1e2
+            linear_rate = (final_lr - self.initial_learning_rate) / (40.0*self.steps_per_epoch - const_until)
+            op = self.initial_learning_rate + linear_rate*(x_recomp-c)
+
             value = tf.case([(x_recomp > c, lambda: op)], default=lambda: self.initial_learning_rate)
+
             return value
 
-    if config_dict.use_swa:
+    if config_dict.adamw_decay > 0.0:
         full_optimiser = tfa.optimizers.AdamW(weight_decay=LRSchedule(config_dict.adamw_decay),
                                               learning_rate=LRSchedule(config_dict.ft_lr))
-        full_optimiser = tfa.optimizers.SWA(full_optimiser)
     else:
         full_optimiser = tf.keras.optimizers.Adam(learning_rate=LRSchedule(config_dict.ft_lr))
 
