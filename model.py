@@ -27,7 +27,7 @@ class ReparamTrickLayer(keras.layers.Layer):
                 self._encoder_trainer.transform_std(input[:, :, :, :, 1]))
             # Use the DBV mean and draw sample correlated with the oef one (via cholesky of cov term)
             dbv_sample = input[:, :, :, :, 2] + \
-                         z[:, :, :, :, 0] * input[:, :, :, :, 4] + \
+                         z[:, :, :, :, 0] * self._encoder_trainer.transform_offdiag(input[:, :, :, :, 4]) + \
                          z[:, :, :, :, 1] * tf.exp(self._encoder_trainer.transform_std(input[:, :, :, :, 3]))
 
         else:
@@ -86,9 +86,9 @@ class EncoderTrainer:
         self._mog_components = mog_components
         self._no_samples = no_samples
         self._oef_range = 0.8
-        self._min_oef = 0.025
+        self._min_oef = 0.04
         self._dbv_range = 0.3
-        self._min_dbv = 0.001
+        self._min_dbv = 0.002
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
 
@@ -287,6 +287,10 @@ class EncoderTrainer:
         # Transform the predicted std-dev to the correct range
         return (tf.tanh(pred_stds) * 2.0) - 1.0
 
+    def transform_offdiag(self, pred_offdiag):
+        # Limit the magnitude of off-diagonal terms by pushing through a tanh
+        return tf.tanh(pred_offdiag)
+
     def inv_transform_std(self, std):
         return tf.math.atanh((std+1.0) / 2.0)
 
@@ -402,7 +406,8 @@ class EncoderTrainer:
         def gaussian_nll(obs, mean, log_std):
             return -(-log_std - (1.0 / 2.0) * ((obs - mean) / tf.exp(log_std)) ** 2)
         if self._use_mvg:
-            loss = gaussian_nll_chol(y_true[:, :2], tf.stack([oef_mean, dbv_mean], -1), oef_log_std, y_pred[:, 4], dbv_log_std)
+            loss = gaussian_nll_chol(y_true[:, :2], tf.stack([oef_mean, dbv_mean], -1), oef_log_std,
+                                     self.transform_offdiag(y_pred[:, 4]), dbv_log_std)
         else:
             # Gaussian negative log likelihoods
             oef_nll = gaussian_nll(y_true[:, 0], oef_mean, oef_log_std)
@@ -521,6 +526,8 @@ class EncoderTrainer:
                 q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, q_oef_dbv_cov = tf.split(predicted, 5, -1)
                 p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(true, 6, -1)
 
+            q_oef_dbv_cov = self.transform_offdiag(q_oef_dbv_cov)
+            p_oef_dbv_cov = self.transform_offdiag(p_oef_dbv_cov)
             q_oef_log_std, q_oef_log_std = tf.split(self.transform_std(tf.concat([q_oef_log_std, q_oef_log_std], -1)), 2, -1)
             p_oef_log_std, p_oef_log_std = tf.split(self.transform_std(tf.concat([p_oef_log_std, p_oef_log_std], -1)),
                                                     2, -1)
@@ -669,7 +676,7 @@ class EncoderTrainer:
         log_stds = tf.concat([predictions[:, :, :, :, 1:2], predictions[:, :, :, :, 3:4]], -1)
         log_stds = self.transform_std(log_stds)
         if self._use_mvg:
-            log_stds = tf.concat([log_stds, predictions[:, :, :, :, 4:5]], -1)
+            log_stds = tf.concat([log_stds, self.transform_offdiag(predictions[:, :, :, :, 4:5])], -1)
 
         # Extract the OEF and DBV and transform them
         predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
