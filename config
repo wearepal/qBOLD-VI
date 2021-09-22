@@ -49,13 +49,13 @@ snr = 10
 oef_start = 0.05
 oef_end = 0.8
 oef_mean = 0.4
-oef_std = 0.1
+oef_std = 0.2
 
 # DBV Range
-dbv_start = 0.002
+dbv_start = 0.003
 dbv_end = 0.25
-dbv_mean = 0.04
-dbv_std = 0.025
+dbv_mean = 0.025
+dbv_std = 0.02
 
 # OEF/DBV Sample Size
 sample_size = 2500

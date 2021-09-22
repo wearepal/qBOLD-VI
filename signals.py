@@ -245,19 +245,22 @@ class SignalGenerationLayer(keras.layers.Layer):
 
 
 def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, variable_hct=False, uniform_prop=0.1):
+    import tensorflow_probability as tfp
     sig_layer = SignalGenerationLayer(params, full_model, use_blood, misaligned_prob=misaligned_prob,
                                       variable_hct=variable_hct)
     oefs = tf.random.uniform((round(int(params['sample_size'])*uniform_prop),), minval=float(params['oef_start']),
                              maxval=float(params['oef_end']))
-    dbvs = tf.random.uniform((round(int(params['sample_size'])*uniform_prop),), minval=float(params['dbv_start']),
-                             maxval=float(params['dbv_end']))
+
     oefs_n = tf.random.normal((round(int(params['sample_size'])*(1.0-uniform_prop)),)) * float(params['oef_std']) + float(params['oef_mean'])
-
-    dbvs_n = tf.random.normal((round(int(params['sample_size'])*(1.0-uniform_prop)),)) * float(params['dbv_std']) + float(params['dbv_mean'])
     oefs_n = tf.clip_by_value(oefs_n, float(params['oef_start']), float(params['oef_end']))
-    dbvs_n = tf.clip_by_value(dbvs_n, float(params['dbv_start']), float(params['dbv_end']))
-
     oefs = tf.concat([oefs, oefs_n], 0)
+
+    dbvs = tf.random.uniform((round(int(params['sample_size']) * uniform_prop),), minval=float(params['dbv_start']),
+                             maxval=float(params['dbv_end']))
+
+    dbvs_n = tf.cast(tfp.distributions.TruncatedNormal(loc=float(params['dbv_mean']), scale=float(params['dbv_std']),
+                                                       low=float(params['dbv_start']), high=float(params['dbv_end'])).
+                     sample((round(int(params['sample_size'])*(1.0-uniform_prop)),)), tf.float32)
     dbvs = tf.concat([dbvs, dbvs_n], 0)
 
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
