@@ -289,7 +289,7 @@ class EncoderTrainer:
 
     def transform_offdiag(self, pred_offdiag):
         # Limit the magnitude of off-diagonal terms by pushing through a tanh
-        return tf.tanh(pred_offdiag)
+        return tf.tanh(pred_offdiag)*3.0
 
     def inv_transform_std(self, std):
         return tf.math.atanh((std+1.0) / 2.0)
