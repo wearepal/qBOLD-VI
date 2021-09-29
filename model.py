@@ -87,8 +87,8 @@ class EncoderTrainer:
         self._no_samples = no_samples
         self._oef_range = 0.8
         self._min_oef = 0.04
-        self._dbv_range = 0.3
-        self._min_dbv = 0.002
+        self._dbv_range = 0.2
+        self._min_dbv = 0.001
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
 
@@ -285,14 +285,14 @@ class EncoderTrainer:
 
     def transform_std(self, pred_stds):
         # Transform the predicted std-dev to the correct range
-        return (tf.tanh(pred_stds) * 2.0) - 1.0
+        return (tf.tanh(pred_stds) * 5.0) - 1.0
 
     def transform_offdiag(self, pred_offdiag):
         # Limit the magnitude of off-diagonal terms by pushing through a tanh
-        return tf.tanh(pred_offdiag)*3.0
+        return tf.tanh(pred_offdiag)*5.0
 
     def inv_transform_std(self, std):
-        return tf.math.atanh((std+1.0) / 2.0)
+        return tf.math.atanh((std+1.0) / 5.0)
 
     def forward_transform(self, logits):
         # Define the forward transform of the predicted parameters to OEF/DBV
@@ -302,39 +302,63 @@ class EncoderTrainer:
         output = tf.concat([oef, dbv], axis=-1)
         return output
 
-    def backwards_transform(self, signal):
+    def backwards_transform(self, signal, include_logit):
         # Define how to backwards transform OEF/DBV to the same parameterisation used by the NN
         oef, dbv = tf.split(signal, 2, -1)
-        oef = logit((oef - self._min_oef) / self._oef_range)
-        dbv = logit((dbv - self._min_dbv) / self._dbv_range)
+        oef = (oef - self._min_oef) / self._oef_range
+        dbv = (dbv - self._min_dbv) / self._dbv_range
+        if include_logit:
+            oef = logit(oef)
+            dbv = logit(dbv)
         output = tf.concat([oef, dbv], axis=-1)
         return output
+
+    def create_samples(self, predicted_params, mask, no_samples):
+        rpl = ReparamTrickLayer(self)
+        samples = []
+        for i in range(no_samples):
+            samples.append(rpl([predicted_params, mask]))
+        samples = tf.stack(samples, -1)
+        return samples
+
+    def calculate_means(self, predicted_params, mask, include_r2p=False, return_stds=False, no_samples=20):
+        # Calculate the means of the logit normal variables via sampling
+        samples = self.create_samples(predicted_params, mask, no_samples)
+        means = tf.reduce_mean(samples, -1)
+        if return_stds:
+            stds = tf.reduce_mean(tf.square(samples - tf.expand_dims(means, -1)), -1)
+        if include_r2p:
+            r2ps = self.calculate_r2p(samples[:, :, :, :, 0, :], samples[:, :, :, :, 1, :])
+            r2p_mean = tf.reduce_mean(r2ps, -1, keepdims=True)
+            means = tf.concat([means, r2p_mean], -1)
+            if return_stds:
+                r2p_std = tf.reduce_mean(tf.square(r2ps - r2p_mean), -1, keepdims=True)
+                stds = tf.concat([stds, r2p_std], -1)
+
+        if return_stds:
+            return means, stds
+        else:
+            return means
 
     def oef_dbv_metrics(self, y_true, y_pred, oef_dbv_r2p=0):
         """
         Produce the MSE of the predictions of OEF or DBV
         @param oef is a boolean, if False produces the output for DBV
         """
+
+        means = self.calculate_means(y_pred, tf.ones_like(y_pred[:, :, :, :, 0:1]), include_r2p=True)
+
         # Reshape the data such that we can work with either volumes or single voxels
         y_true = tf.reshape(y_true, (-1, 3))
-        if self._infer_inv_gamma:
-            y_pred, _ = tf.split(y_pred, 2, -1)
-        if self._use_mvg:
-            y_pred = tf.reshape(y_pred, (-1, 5))
-        else:
-            y_pred = tf.reshape(y_pred, (-1, 4))
+        means = tf.reshape(means, (-1, 3))
 
-        # keras.backend.print_tensor(tf.reduce_mean(tf.exp(y_pred[:,1])))
-        means = tf.stack([y_pred[:, 0], y_pred[:, 2]], -1)
-        means = self.forward_transform(means)
-        residual = means - y_true[:, 0:2]
+        residual = means - y_true
         if oef_dbv_r2p == 0:
             residual = residual[:, 0]
         elif oef_dbv_r2p == 1:
             residual = residual[:, 1]
         else:
-            r2p = self.calculate_r2p(means[:, 0], means[:, 1])
-            residual = y_true[:, 2] - r2p
+            residual = residual[:, 2]
 
         return tf.reduce_mean(tf.square(residual))
 
@@ -346,6 +370,30 @@ class EncoderTrainer:
 
     def r2p_metric(self, y_true, y_pred):
         return self.oef_dbv_metrics(y_true, y_pred, 2)
+
+    def logit_gaussian_mvg_log_prob(self, observations, predicted_params):
+        original_shape = tf.shape(predicted_params)[0:4]
+        # Convert our predicted parameters
+        predicted_params = tf.reshape(predicted_params, (-1, 5))
+        oef_mean = predicted_params[:, 0]
+        oef_log_std = self.transform_std(predicted_params[:, 1])
+        dbv_mean = predicted_params[:, 2]
+        dbv_log_std = self.transform_std(predicted_params[:, 3])
+
+        def gaussian_nll_chol(obs, mean, oef_log_std, oef_dbv_cov, dbv_log_std):
+            det = EncoderTrainer.calculate_chol_det(oef_log_std, dbv_log_std)
+            # Calculate the inverse cholesky matrix
+            squared_whitened_residual = EncoderTrainer.squared_whitened_residual(obs, mean, oef_log_std,
+                                                                                 dbv_log_std, oef_dbv_cov)
+            return -(-0.5 * tf.math.log(det) - 0.5 * squared_whitened_residual)
+
+        # Scale our observation to 0-1 range
+        x = self.backwards_transform(observations[:, 0:2], False)
+        loss = gaussian_nll_chol(logit(x), tf.stack([oef_mean, dbv_mean], -1), oef_log_std,
+                                 self.transform_offdiag(predicted_params[:, 4]), dbv_log_std)
+        loss = loss + tf.reduce_sum(tf.math.log(x*(1.0-x)), -1)
+        loss = tf.reshape(loss, original_shape)
+        return loss
 
     @staticmethod
     def squared_whitened_residual(obs, mean, oef_log_std, dbv_log_std, oef_dbv_cov):
@@ -383,7 +431,7 @@ class EncoderTrainer:
         # Reshape the data such that we can work with either volumes or single voxels
         y_true_orig = tf.reshape(y_true_orig, (-1, 3))
         # Backwards transform the true values (so we can define our distribution in the parameter space)
-        y_true = self.backwards_transform(y_true_orig[:, 0:2])
+        y_true = self.backwards_transform(y_true_orig[:, 0:2], True)
         if self._infer_inv_gamma:
             y_pred_orig, inv_gamma_params = tf.split(y_pred_orig, 2, axis=-1)
 
@@ -397,17 +445,10 @@ class EncoderTrainer:
         dbv_mean = y_pred[:, 2]
         dbv_log_std = self.transform_std(y_pred[:, 3])
 
-        def gaussian_nll_chol(obs, mean, oef_log_std, oef_dbv_cov, dbv_log_std):
-            det = EncoderTrainer.calculate_chol_det(oef_log_std, dbv_log_std)
-            # Calculate the inverse cholesky matrix
-            squared_whitened_residual = EncoderTrainer.squared_whitened_residual(obs, mean, oef_log_std, dbv_log_std, oef_dbv_cov)
-            return -(-0.5*tf.math.log(det)-0.5 * squared_whitened_residual)
-
         def gaussian_nll(obs, mean, log_std):
             return -(-log_std - (1.0 / 2.0) * ((obs - mean) / tf.exp(log_std)) ** 2)
         if self._use_mvg:
-            loss = gaussian_nll_chol(y_true[:, :2], tf.stack([oef_mean, dbv_mean], -1), oef_log_std,
-                                     self.transform_offdiag(y_pred[:, 4]), dbv_log_std)
+            loss = self.logit_gaussian_mvg_log_prob(y_true_orig[:, :2], y_pred_orig)
         else:
             # Gaussian negative log likelihoods
             oef_nll = gaussian_nll(y_true[:, 0], oef_mean, oef_log_std)
@@ -512,49 +553,85 @@ class EncoderTrainer:
         else:
             return nll
 
+    def mvg_kl_analytic(self, prior, pred):
+        q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, q_oef_dbv_cov = tf.split(pred, 5, -1)
+        p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(prior, 6, -1)
+
+        q_oef_log_std, q_dbv_log_std = tf.split(self.transform_std(tf.concat([q_oef_log_std, q_dbv_log_std], -1)), 2, -1)
+        p_oef_log_std, p_dbv_log_std = tf.split(self.transform_std(tf.concat([p_oef_log_std, p_dbv_log_std], -1)), 2, -1)
+        q_oef_dbv_cov = self.transform_offdiag(q_oef_dbv_cov)
+        p_oef_dbv_cov = self.transform_offdiag(p_oef_dbv_cov)
+
+        q_dbv_std = tf.sqrt(tf.exp(q_dbv_log_std) ** 2 + q_oef_dbv_cov ** 2)
+        q_oef_std = tf.exp(q_oef_log_std)
+        p_dbv_std = tf.sqrt(tf.exp(p_dbv_log_std) ** 2 + p_oef_dbv_cov ** 2)
+        p_oef_std = tf.exp(p_oef_log_std)
+        q_oef = tfp.distributions.LogitNormal(loc=q_oef_mean, scale=q_oef_std)
+        p_oef = tfp.distributions.LogitNormal(loc=p_oef_mean, scale=p_oef_std)
+        kl_oef = q_oef.kl_divergence(p_oef)
+
+        q_dbv = tfp.distributions.LogitNormal(loc=q_dbv_mean, scale=q_dbv_std)
+        p_dbv = tfp.distributions.LogitNormal(loc=p_dbv_mean, scale=p_dbv_std)
+        kl_dbv = q_dbv.kl_divergence(p_dbv)
+        return kl_oef+kl_dbv
+
+    def mvg_kl_samples(self, prior, pred):
+        prior_dist, mask = tf.split(prior, [5, 1], -1)
+        no_samples = 10
+        samples = self.create_samples(pred, mask, no_samples)
+        log_q = [self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), pred) for x in range(no_samples)]
+        log_p = [self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), prior_dist) for x in range(no_samples)]
+        return tf.reduce_mean(tf.stack(log_q, -1) - tf.stack(log_p, -1), -1, keepdims=True) *1.0
+
+    def mvg_kl(self, true, predicted):
+        if self._use_population_prior:
+
+            q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, q_oef_dbv_cov, p_oef_mean, p_oef_log_std, \
+            p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov = tf.split(predicted, 10, -1)
+            _, _, _, _, _, mask = tf.split(true, 6, -1)
+        else:
+            q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, q_oef_dbv_cov = tf.split(predicted, 5, -1)
+            p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(true, 6, -1)
+
+        q_oef_dbv_cov = self.transform_offdiag(q_oef_dbv_cov)
+        p_oef_dbv_cov = self.transform_offdiag(p_oef_dbv_cov)
+        q_oef_log_std, q_dbv_log_std = tf.split(self.transform_std(tf.concat([q_oef_log_std, q_dbv_log_std], -1)), 2,
+                                                -1)
+        p_oef_log_std, p_dbv_log_std = tf.split(self.transform_std(tf.concat([p_oef_log_std, p_dbv_log_std], -1)),
+                                                2, -1)
+        det_q = EncoderTrainer.calculate_chol_det(q_oef_log_std, q_dbv_log_std)
+        det_p = EncoderTrainer.calculate_chol_det(p_oef_log_std, p_dbv_log_std)
+        p_mu = tf.concat([p_oef_mean, p_dbv_mean], -1)
+        q_mu = tf.concat([q_oef_mean, q_dbv_mean], -1)
+
+        squared_residual = EncoderTrainer.squared_whitened_residual(p_mu, q_mu, p_oef_log_std, p_dbv_log_std,
+                                                                    p_oef_dbv_cov)
+        det_term = tf.math.log(det_p) - tf.math.log(det_q)
+
+        inv_p_tl = 1.0 / tf.exp(p_oef_log_std)
+        inv_p_br = 1.0 / tf.exp(p_dbv_log_std)
+        inv_p_od = inv_p_tl * p_oef_dbv_cov * inv_p_br * -1.0
+        inv_pcov_tl = inv_p_tl ** 2
+        inv_pcov_br = inv_p_od ** 2 + inv_p_br ** 2
+        inv_pcov_od = inv_p_tl * inv_p_od
+
+        q_tl = tf.exp(q_oef_log_std) ** 2
+        q_br = tf.exp(q_dbv_log_std) ** 2 + q_oef_dbv_cov ** 2
+        q_od = q_oef_dbv_cov * tf.exp(q_oef_log_std)
+
+        trace = inv_pcov_tl * q_tl + inv_pcov_od * q_od + inv_pcov_od * q_od + q_br * inv_pcov_br
+        squared_residual = tf.expand_dims(squared_residual, -1)
+
+        kl_op = 0.5 * (trace + squared_residual + det_term - 2.0)
+        return kl_op
+
     def kl_loss(self, true, predicted, return_mean=True):
 
         true = tf.concat([true for x in range(self._no_samples)], 0)
         prior_cost = 0.0
         if self._use_mvg:
-            if self._use_population_prior:
-
-                q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, q_oef_dbv_cov, p_oef_mean, p_oef_log_std, \
-                p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov = tf.split(predicted, 10, -1)
-                _, _, _, _, _, mask = tf.split(true, 6, -1)
-            else:
-                q_oef_mean, q_oef_log_std, q_dbv_mean, q_dbv_log_std, q_oef_dbv_cov = tf.split(predicted, 5, -1)
-                p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(true, 6, -1)
-
-            q_oef_dbv_cov = self.transform_offdiag(q_oef_dbv_cov)
-            p_oef_dbv_cov = self.transform_offdiag(p_oef_dbv_cov)
-            q_oef_log_std, q_oef_log_std = tf.split(self.transform_std(tf.concat([q_oef_log_std, q_oef_log_std], -1)), 2, -1)
-            p_oef_log_std, p_oef_log_std = tf.split(self.transform_std(tf.concat([p_oef_log_std, p_oef_log_std], -1)),
-                                                    2, -1)
-            det_q = EncoderTrainer.calculate_chol_det(q_oef_log_std, q_dbv_log_std)
-            det_p = EncoderTrainer.calculate_chol_det(p_oef_log_std, p_dbv_log_std)
-            p_mu = tf.concat([p_oef_mean, p_dbv_mean], -1)
-            q_mu = tf.concat([q_oef_mean, q_dbv_mean], -1)
-
-            squared_residual = EncoderTrainer.squared_whitened_residual(p_mu, q_mu, p_oef_log_std, p_dbv_log_std, p_oef_dbv_cov)
-            det_term = tf.math.log(det_p) - tf.math.log(det_q)
-
-            inv_p_tl = 1.0/tf.exp(p_oef_log_std)
-            inv_p_br = 1.0/tf.exp(p_dbv_log_std)
-            inv_p_od = inv_p_tl * p_oef_dbv_cov * inv_p_br * -1.0
-            inv_pcov_tl = inv_p_tl**2
-            inv_pcov_br = inv_p_od**2 + inv_p_br**2
-            inv_pcov_od = inv_p_tl*inv_p_od
-
-            q_tl = tf.exp(q_oef_log_std)**2
-            q_br = tf.exp(q_dbv_log_std)**2 + q_oef_dbv_cov**2
-            q_od = q_oef_dbv_cov*tf.exp(q_oef_log_std)
-
-            trace = inv_pcov_tl*q_tl + inv_pcov_od*q_od + inv_pcov_od*q_od + q_br*inv_pcov_br
-            squared_residual = tf.expand_dims(squared_residual, -1)
-
-            kl_op = 0.5 * (trace + squared_residual + det_term - 2.0)
-
+            kl_op = self.mvg_kl_analytic(true, predicted)
+            p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(true, 6, -1)
             kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
             if return_mean:
                 return tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
@@ -679,9 +756,8 @@ class EncoderTrainer:
             log_stds = tf.concat([log_stds, self.transform_offdiag(predictions[:, :, :, :, 4:5])], -1)
 
         # Extract the OEF and DBV and transform them
-        predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
-
-        predictions = self.forward_transform(predictions)
+        #predictions = tf.concat([predictions[:, :, :, :, 0:1], predictions[:, :, :, :, 2:3]], -1)
+        means, log_stds = self.calculate_means(predictions, tf.ones_like(predictions[:, :, :, :, :1]), include_r2p=True, return_stds=True, no_samples=200)
 
         def save_im_data(im_data, _filename):
             existing_nib = nib.load(transform_directory + '/example.nii.gz')
@@ -691,26 +767,34 @@ class EncoderTrainer:
             array_img = nib.Nifti1Image(images, None, header=new_header)
 
             nib.save(array_img, _filename + '.nii.gz')
-
-        oef = predictions[:, :, :, :, 0:1]
-        dbv = predictions[:, :, :, :, 1:2]
-        r2p = self.calculate_r2p(oef, dbv)
+        oef, dbv, r2p = tf.split(means, 3, -1)
 
         if fine_tuner_model:
             data = np.float32(data)
-            outputs = fine_tuner_model.predict([data[:, :, :, :, :-1], data[:, :, :, :, -1:]])
-            pred_dist = outputs['predictions']
-            y_pred = outputs['predicted_images']
+
+            likelihood_map_list = []
+            no_samples = 100
+            for i in range(no_samples):
+                outputs = fine_tuner_model.predict([data[:, :, :, :, :-1], data[:, :, :, :, -1:]])
+                pred_dist = outputs['predictions']
+                y_pred = outputs['predicted_images']
+                likelihood_map_tmp = self.fine_tune_loss_fn(data, y_pred, return_mean=False)
+                likelihood_map_list.append(likelihood_map_tmp)
+
+            ave_likelihood_map = tf.reduce_mean(tf.stack(likelihood_map_list, -1), -1)
+
             mask = data[:, :, :, :, -1:]
             y_true = data[:, :, :, :, :-1]
-            likelihood_map = self.fine_tune_loss_fn(data, y_pred, return_mean=False)
+
+
+
             if self._use_population_prior:
                 dists = tf.split(pred_dist, self._mog_components+1, -1)
                 priors = dists[0]
 
             kl_map = self.kl_loss(np.concatenate([priors, mask], -1), pred_dist, return_mean=False)
-            likelihood_map = np.reshape(likelihood_map, data.shape[0:4]+(1,))
-            save_im_data(likelihood_map, filename + '_likelihood')
+            ave_likelihood_map = np.reshape(ave_likelihood_map, data.shape[0:4]+(1,))
+            save_im_data(ave_likelihood_map, filename + '_likelihood')
 
             if data.shape[-1] == 5:
                 kl_map = np.reshape(kl_map, data.shape[0:4]+(1,))

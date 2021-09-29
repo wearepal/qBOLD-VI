@@ -53,7 +53,7 @@ oef_std = 0.2
 
 # DBV Range
 dbv_start = 0.003
-dbv_end = 0.25
+dbv_end = 0.195
 dbv_mean = 0.025
 dbv_std = 0.02
 

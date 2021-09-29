@@ -114,7 +114,7 @@ def prepare_synthetic_dataset(x, y):
     synthetic_dataset = tf.data.Dataset.from_tensor_slices((train_x, train_y))
 
     synthetic_dataset = synthetic_dataset.shuffle(10000)
-    synthetic_dataset = synthetic_dataset.batch(128)
+    synthetic_dataset = synthetic_dataset.batch(512)
     return synthetic_dataset, (valid_x, valid_y)
 
 
@@ -209,7 +209,7 @@ def train_model(config_dict):
     optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
     if config_dict.use_swa:
         optimiser = tfa.optimizers.AdamW(weight_decay=2e-4, learning_rate=config_dict.pt_lr)
-        optimiser = tfa.optimizers.SWA(optimiser, start_averaging=100*20, average_period=50)
+        optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22*40, average_period=22)
     #optimiser = tfa.optimizers.MovingAverage(optimiser)
 
     """if wb_config.use_system_constants:
