@@ -13,6 +13,7 @@ from tensorflow import keras
 import tensorflow_addons as tfa
 import wandb
 from wandb.keras import WandbCallback
+import matplotlib.pyplot as plt
 
 
 def get_constants(params):
@@ -196,6 +197,26 @@ def get_defaults():
         predict_log_data=True
     )
     return defaults
+
+def plot_distribution(trainer):
+    eps = 1e-4
+    num_samples = 1000
+    oefs = tf.linspace(trainer._min_oef + eps, trainer._min_oef + trainer._oef_range - eps, num_samples)
+    dbvs = tf.linspace(trainer._min_dbv + eps, trainer._min_dbv + trainer._dbv_range - eps, num_samples)
+    xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
+    xx = tf.reshape(xx, (-1, 1, 1, 1, 1))
+    yy = tf.reshape(yy, (-1, 1, 1, 1, 1))
+
+    dist = tf.reshape([-0.5, -0.25, -2.0, -0.25, -0.07], (1, 1, 1, 1, -1))
+    dist = tf.concat([dist for x in range(xx.shape[0])], 0)
+    obs = tf.concat([xx, yy], -1)
+    log_loss = trainer.logit_gaussian_mvg_log_prob(tf.reshape(obs, (-1, 2)), dist)
+
+    print(tf.math.reduce_logsumexp(-log_loss - tf.math.log(float(num_samples) ** 2)))
+
+    plt.imshow(tf.reshape(log_loss, (num_samples, num_samples)), vmax=np.percentile(log_loss, 50))
+    plt.colorbar()
+    plt.show()
 
 
 def train_model(config_dict):
@@ -412,6 +433,9 @@ def train_model(config_dict):
 
     def kl_metric(x, y):
         return trainer.kl_loss(x, y)
+
+    def kl_samples_metric(x, y):
+        return trainer.mvg_kl_samples(x, y)
 
     full_model.compile(full_optimiser,
                        loss={'predicted_images': fine_tune_loss,
