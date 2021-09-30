@@ -389,7 +389,8 @@ class EncoderTrainer:
 
         # Scale our observation to 0-1 range
         x = self.backwards_transform(observations[:, 0:2], False)
-        x = tfp.math.clip_by_value_preserve_gradient(x, 1e-4, 1.0-1e-4)
+        epsilon = 1e-5
+        x = tfp.math.clip_by_value_preserve_gradient(x, epsilon, 1.0 - epsilon)
         loss = gaussian_nll_chol(logit(x), tf.stack([oef_mean, dbv_mean], -1), oef_log_std,
                                  self.transform_offdiag(predicted_params[:, 4]), dbv_log_std)
         loss = loss + tf.reduce_sum(tf.math.log(x*(1.0-x)), -1)
@@ -593,17 +594,20 @@ class EncoderTrainer:
         no_samples = 50
         samples = self.create_samples(pred, tf.ones_like(mask), no_samples)
 
-        log_q = [self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), pred) for x in range(no_samples)]
-        log_p = [self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), prior_dist) for x in range(no_samples)]
+        log_q = [-self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), tf.stop_gradient(pred)) for x in range(no_samples)]
+        log_p = [-self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), prior_dist) for x in range(no_samples)]
 
         log_q = tf.stack(log_q, -1)
         log_p = tf.stack(log_p, -1)
 
         #finite_mask = tf.logical_and(tf.math.is_finite(log_q), tf.math.is_finite(log_p))
-        kl_op = log_p - log_q
+        kl_op = log_q - log_p
+        """
         tf.keras.backend.print_tensor(tf.reduce_mean(kl_op))
         kl_op = tf.where(tf.math.is_finite(kl_op), kl_op, tf.zeros_like(kl_op))
         kl_op = tf.reduce_sum(kl_op, -1, keepdims=True) / tf.reduce_sum(tf.cast(tf.math.is_finite(kl_op), tf.float32), -1, keepdims=True)
+        """
+        kl_op = tf.reduce_mean(kl_op, axis=-1, keepdims=True)
         kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
         kl_op = tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
         return kl_op
@@ -655,6 +659,7 @@ class EncoderTrainer:
         true = tf.concat([true for x in range(self._no_samples)], 0)
         prior_cost = 0.0
         if self._use_mvg:
+            return self.mvg_kl_samples(true, predicted)
             kl_op = self.mvg_kl_analytic(true, predicted)
             p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(true, 6, -1)
             kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
