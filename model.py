@@ -285,14 +285,14 @@ class EncoderTrainer:
 
     def transform_std(self, pred_stds):
         # Transform the predicted std-dev to the correct range
-        return (tf.tanh(pred_stds) * 5.0) - 1.0
+        return (tf.tanh(pred_stds) * 3.0) - 1.0
 
     def transform_offdiag(self, pred_offdiag):
         # Limit the magnitude of off-diagonal terms by pushing through a tanh
-        return tf.tanh(pred_offdiag)*5.0
+        return tf.tanh(pred_offdiag)*3.0
 
     def inv_transform_std(self, std):
-        return tf.math.atanh((std+1.0) / 5.0)
+        return tf.math.atanh((std+1.0) / 3.0)
 
     def forward_transform(self, logits):
         # Define the forward transform of the predicted parameters to OEF/DBV
@@ -305,8 +305,8 @@ class EncoderTrainer:
     def backwards_transform(self, signal, include_logit):
         # Define how to backwards transform OEF/DBV to the same parameterisation used by the NN
         oef, dbv = tf.split(signal, 2, -1)
-        oef = (oef - self._min_oef) / self._oef_range
-        dbv = (dbv - self._min_dbv) / self._dbv_range
+        oef = (oef - self._min_oef) / (self._oef_range)
+        dbv = (dbv - self._min_dbv) / (self._dbv_range)
         if include_logit:
             oef = logit(oef)
             dbv = logit(dbv)
@@ -381,17 +381,39 @@ class EncoderTrainer:
         dbv_log_std = self.transform_std(predicted_params[:, 3])
 
         def gaussian_nll_chol(obs, mean, oef_log_std, oef_dbv_cov, dbv_log_std):
-            det = EncoderTrainer.calculate_chol_det(oef_log_std, dbv_log_std)
+            log_det = EncoderTrainer.calculate_log_chol_det(oef_log_std, dbv_log_std)
             # Calculate the inverse cholesky matrix
             squared_whitened_residual = EncoderTrainer.squared_whitened_residual(obs, mean, oef_log_std,
                                                                                  dbv_log_std, oef_dbv_cov)
-            return -(-0.5 * tf.math.log(det) - 0.5 * squared_whitened_residual)
+            return -(-tf.math.log(2.0*math.pi)-0.5 * log_det - 0.5 * squared_whitened_residual)
 
         # Scale our observation to 0-1 range
         x = self.backwards_transform(observations[:, 0:2], False)
+        x = tfp.math.clip_by_value_preserve_gradient(x, 1e-4, 1.0-1e-4)
         loss = gaussian_nll_chol(logit(x), tf.stack([oef_mean, dbv_mean], -1), oef_log_std,
                                  self.transform_offdiag(predicted_params[:, 4]), dbv_log_std)
         loss = loss + tf.reduce_sum(tf.math.log(x*(1.0-x)), -1)
+        loss = tf.reshape(loss, original_shape)
+        return loss
+
+    @staticmethod
+    def gaussian_nll(obs, mean, log_std):
+        return -(-log_std - (1.0 / 2.0) * ((obs - mean) / tf.exp(log_std)) ** 2)
+
+    def logit_gaussian_log_prob(self, observations, predicted_params):
+        original_shape = tf.shape(predicted_params)[0:4]
+        # Convert our predicted parameters
+        predicted_params = tf.reshape(predicted_params, (-1, 4))
+        oef_mean = predicted_params[:, 0]
+        oef_log_std = self.transform_std(predicted_params[:, 1])
+        dbv_mean = predicted_params[:, 2]
+        dbv_log_std = self.transform_std(predicted_params[:, 3])
+
+        # Scale our observation to 0-1 range
+        x = self.backwards_transform(observations[:, 0:2], False)
+        loss_oef = self.gaussian_nll(logit(x[:, 0]), oef_mean, oef_log_std)
+        loss_dbv = self.gaussian_nll(logit(x[:, 1]), dbv_mean, dbv_log_std)
+        loss = loss_oef + loss_dbv + tf.reduce_sum(tf.math.log(x*(1.0-x)), -1)
         loss = tf.reshape(loss, original_shape)
         return loss
 
@@ -411,20 +433,17 @@ class EncoderTrainer:
         inv_br = 1.0 / br
         inv_bl = inv_tl * od * inv_br * -1.0
         residual = obs - mean
-        whitened_residual_oef = residual[:, 0:1] * inv_tl + residual[:, 1:2] * inv_bl
-        whitened_residual_dbv = residual[:, 1:2] * inv_br
+        whitened_residual_oef = residual[:, 0:1] * inv_tl
+        whitened_residual_dbv = residual[:, 1:2] * inv_br + residual[:, 0:1] * inv_bl
         whitened_residual = tf.concat([whitened_residual_oef, whitened_residual_dbv], -1)
         squared_whitened_residual = tf.reduce_sum(tf.square(whitened_residual), -1)
         squared_whitened_residual = tf.reshape(squared_whitened_residual, out_shape)
         return squared_whitened_residual
 
     @staticmethod
-    def calculate_chol_det(oef_log_std, dbv_log_std):
-        # Calculate covariance matrix
-        tl = tf.exp(oef_log_std)
-        br = tf.exp(dbv_log_std)
-        # Get the determinant (product of squared diagonals)
-        det = tl ** 2 * br ** 2
+    def calculate_log_chol_det(oef_log_std, dbv_log_std):
+        # Get the log (2.0*sum log diags) of the determinant (product of squared diagonals)
+        det = 2.0 * (oef_log_std + dbv_log_std)
         return det
 
     def synthetic_data_loss(self, y_true_orig, y_pred_orig, use_r2p_loss, inv_gamma_alpha, inv_gamma_beta):
@@ -445,17 +464,11 @@ class EncoderTrainer:
         dbv_mean = y_pred[:, 2]
         dbv_log_std = self.transform_std(y_pred[:, 3])
 
-        def gaussian_nll(obs, mean, log_std):
-            return -(-log_std - (1.0 / 2.0) * ((obs - mean) / tf.exp(log_std)) ** 2)
+
         if self._use_mvg:
             loss = self.logit_gaussian_mvg_log_prob(y_true_orig[:, :2], y_pred_orig)
         else:
-            # Gaussian negative log likelihoods
-            oef_nll = gaussian_nll(y_true[:, 0], oef_mean, oef_log_std)
-            dbv_nll = gaussian_nll(y_true[:, 1], dbv_mean, dbv_log_std)
-
-
-            loss = oef_nll + dbv_nll
+            loss = self.logit_gaussian_log_prob(y_true_orig[:, :2], y_pred_orig)
 
         """hct_mean = y_pred[:, 4]
         hct_log_std = transform_std(y_pred[:, 5])"""
@@ -473,7 +486,7 @@ class EncoderTrainer:
             # Calculate a normal distribution for r2 prime from these samples
             r2p_mean = tf.reduce_mean(r2p, -1)
             r2p_log_std = tf.math.log(tf.math.reduce_std(r2p, -1))
-            r2p_nll = gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
+            r2p_nll = self.gaussian_nll(y_true_orig[:, 2], r2p_mean, r2p_log_std)
             loss = loss + r2p_nll
 
         if (inv_gamma_alpha * inv_gamma_beta > 0.0) or self._infer_inv_gamma:
@@ -577,11 +590,23 @@ class EncoderTrainer:
 
     def mvg_kl_samples(self, prior, pred):
         prior_dist, mask = tf.split(prior, [5, 1], -1)
-        no_samples = 10
-        samples = self.create_samples(pred, mask, no_samples)
+        no_samples = 50
+        samples = self.create_samples(pred, tf.ones_like(mask), no_samples)
+
         log_q = [self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), pred) for x in range(no_samples)]
         log_p = [self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), prior_dist) for x in range(no_samples)]
-        return tf.reduce_mean(tf.stack(log_q, -1) - tf.stack(log_p, -1), -1, keepdims=True) *1.0
+
+        log_q = tf.stack(log_q, -1)
+        log_p = tf.stack(log_p, -1)
+
+        #finite_mask = tf.logical_and(tf.math.is_finite(log_q), tf.math.is_finite(log_p))
+        kl_op = log_p - log_q
+        tf.keras.backend.print_tensor(tf.reduce_mean(kl_op))
+        kl_op = tf.where(tf.math.is_finite(kl_op), kl_op, tf.zeros_like(kl_op))
+        kl_op = tf.reduce_sum(kl_op, -1, keepdims=True) / tf.reduce_sum(tf.cast(tf.math.is_finite(kl_op), tf.float32), -1, keepdims=True)
+        kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
+        kl_op = tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
+        return kl_op
 
     def mvg_kl(self, true, predicted):
         if self._use_population_prior:
@@ -599,14 +624,14 @@ class EncoderTrainer:
                                                 -1)
         p_oef_log_std, p_dbv_log_std = tf.split(self.transform_std(tf.concat([p_oef_log_std, p_dbv_log_std], -1)),
                                                 2, -1)
-        det_q = EncoderTrainer.calculate_chol_det(q_oef_log_std, q_dbv_log_std)
-        det_p = EncoderTrainer.calculate_chol_det(p_oef_log_std, p_dbv_log_std)
+        det_q = EncoderTrainer.calculate_log_chol_det(q_oef_log_std, q_dbv_log_std)
+        det_p = EncoderTrainer.calculate_log_chol_det(p_oef_log_std, p_dbv_log_std)
         p_mu = tf.concat([p_oef_mean, p_dbv_mean], -1)
         q_mu = tf.concat([q_oef_mean, q_dbv_mean], -1)
 
         squared_residual = EncoderTrainer.squared_whitened_residual(p_mu, q_mu, p_oef_log_std, p_dbv_log_std,
                                                                     p_oef_dbv_cov)
-        det_term = tf.math.log(det_p) - tf.math.log(det_q)
+        det_term = det_p - det_q
 
         inv_p_tl = 1.0 / tf.exp(p_oef_log_std)
         inv_p_br = 1.0 / tf.exp(p_dbv_log_std)
@@ -667,9 +692,12 @@ class EncoderTrainer:
                 p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, mask = tf.split(true, 5, -1)
 
             def kl(q_mean, q_log_std, p_mean, p_log_std):
-                result = tf.exp(q_log_std * 2 - p_log_std * 2) + tf.square(p_mean - q_mean) * tf.exp(p_log_std * -2.0)
+                q = tfp.distributions.LogitNormal(loc=q_mean, scale=tf.exp(q_log_std))
+                p = tfp.distributions.LogitNormal(loc=p_mean, scale=tf.exp(p_log_std))
+                return q.kl_divergence(p)
+                """result = tf.exp(q_log_std * 2 - p_log_std * 2) + tf.square(p_mean - q_mean) * tf.exp(p_log_std * -2.0)
                 result = result + p_log_std * 2 - q_log_std * 2 - 1.0
-                return result * 0.5
+                return result * 0.5"""
 
             q_oef_log_std, q_dbv_log_std = tf.split(self.transform_std(tf.concat([q_oef_log_std, q_dbv_log_std], -1)), 2,
                                                     -1)
