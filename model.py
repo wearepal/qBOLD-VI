@@ -589,10 +589,9 @@ class EncoderTrainer:
         kl_dbv = q_dbv.kl_divergence(p_dbv)
         return kl_oef+kl_dbv
 
-    def mvg_kl_samples(self, prior, pred):
+    def mvg_kl_samples(self, prior, pred, no_samples=50):
         prior_dist, mask = tf.split(prior, [5, 1], -1)
-        no_samples = 50
-        samples = self.create_samples(pred, tf.ones_like(mask), no_samples)
+        samples = self.create_samples(pred, mask, no_samples)
 
         log_q = [-self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), tf.stop_gradient(pred)) for x in range(no_samples)]
         log_p = [-self.logit_gaussian_mvg_log_prob(tf.reshape(samples[:, :, :, :, :, x], (-1, 2)), prior_dist) for x in range(no_samples)]
@@ -608,8 +607,6 @@ class EncoderTrainer:
         kl_op = tf.reduce_sum(kl_op, -1, keepdims=True) / tf.reduce_sum(tf.cast(tf.math.is_finite(kl_op), tf.float32), -1, keepdims=True)
         """
         kl_op = tf.reduce_mean(kl_op, axis=-1, keepdims=True)
-        kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
-        kl_op = tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
         return kl_op
 
     def mvg_kl(self, true, predicted):
@@ -654,14 +651,13 @@ class EncoderTrainer:
         kl_op = 0.5 * (trace + squared_residual + det_term - 2.0)
         return kl_op
 
-    def kl_loss(self, true, predicted, return_mean=True):
+    def kl_loss(self, true, predicted, return_mean=True, no_samples=70):
 
         true = tf.concat([true for x in range(self._no_samples)], 0)
         prior_cost = 0.0
         if self._use_mvg:
-            return self.mvg_kl_samples(true, predicted)
-            kl_op = self.mvg_kl_analytic(true, predicted)
-            p_oef_mean, p_oef_log_std, p_dbv_mean, p_dbv_log_std, p_oef_dbv_cov, mask = tf.split(true, 6, -1)
+            kl_op = self.mvg_kl_samples(true, predicted, no_samples=no_samples)
+            _, mask = tf.split(true, [5, 1], -1)
             kl_op = tf.where(mask > 0, kl_op, tf.zeros_like(kl_op))
             if return_mean:
                 return tf.reduce_sum(kl_op) / tf.reduce_sum(mask)
@@ -825,7 +821,7 @@ class EncoderTrainer:
                 dists = tf.split(pred_dist, self._mog_components+1, -1)
                 priors = dists[0]
 
-            kl_map = self.kl_loss(np.concatenate([priors, mask], -1), pred_dist, return_mean=False)
+            kl_map = self.kl_loss(np.concatenate([priors, mask], -1), pred_dist, return_mean=False, no_samples=100)
             ave_likelihood_map = np.reshape(ave_likelihood_map, data.shape[0:4]+(1,))
             save_im_data(ave_likelihood_map, filename + '_likelihood')
 

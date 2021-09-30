@@ -1,0 +1,46 @@
+2021-09-30 16:40:28.661107: I tensorflow/core/platform/cpu_feature_guard.cc:142] This TensorFlow binary is optimized with oneAPI Deep Neural Network Library (oneDNN) to use the following CPU instructions in performance-critical operations:  AVX2 FMA
+To enable them in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2021-09-30 16:40:29.677676: I tensorflow/compiler/mlir/mlir_graph_optimization_pass.cc:176] None of the MLIR Optimization Passes are enabled (registered 2)
+Exception in thread Thread-3:
+Traceback (most recent call last):
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.8/lib/python3.8/threading.py", line 932, in _bootstrap_inner
+    self.run()
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.8/lib/python3.8/threading.py", line 870, in run
+    self._target(*self._args, **self._kwargs)
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/wandb/sdk/wandb_run.py", line 201, in check_status
+    status_response = self._interface.communicate_stop_status()
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/wandb/sdk/interface/interface.py", line 742, in communicate_stop_status
+    resp = self._communicate(req, timeout=timeout, local=True)
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/wandb/sdk/interface/interface.py", line 544, in _communicate
+    return self._communicate_async(rec, local=local).get(timeout=timeout)
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/wandb/sdk/interface/interface.py", line 549, in _communicate_async
+    raise Exception("The wandb backend process has shutdown")
+Exception: The wandb backend process has shutdown
+Traceback (most recent call last):
+  File "train.py", line 498, in <module>
+    train_model(wandb.config)
+  File "train.py", line 292, in train_model
+    x, y = create_synthetic_dataset(params, config_dict.full_model, config_dict.use_blood,
+  File "/Users/is321/Documents/GitHub/qBOLD-Kit/signals.py", line 281, in create_synthetic_dataset
+    train_x_list.append(sig_layer(y_subset))
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/keras/engine/base_layer.py", line 1030, in __call__
+    outputs = call_fn(inputs, *args, **kwargs)
+  File "/Users/is321/Documents/GitHub/qBOLD-Kit/signals.py", line 98, in call
+    tissue_signal = self.calc_tissue(oef, dbv, hct)
+  File "/Users/is321/Documents/GitHub/qBOLD-Kit/signals.py", line 189, in calc_tissue
+    signals = tf.vectorized_map(compose, (dbv, dw))
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/ops/parallel_for/control_flow_ops.py", line 546, in vectorized_map
+    return pfor(loop_fn, batch_size,
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/ops/parallel_for/control_flow_ops.py", line 206, in pfor
+    outputs = f()
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/eager/def_function.py", line 889, in __call__
+    result = self._call(*args, **kwds)
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/eager/def_function.py", line 956, in _call
+    return self._concrete_stateful_fn._call_flat(
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/eager/function.py", line 1960, in _call_flat
+    return self._build_call_outputs(self._inference_function.call(
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/eager/function.py", line 591, in call
+    outputs = execute.execute(
+  File "/Users/is321/venvs/tensorflow/lib/python3.8/site-packages/tensorflow/python/eager/execute.py", line 59, in quick_execute
+    tensors = pywrap_tfe.TFE_Py_Execute(ctx._handle, device_name, op_name,
+KeyboardInterrupt
