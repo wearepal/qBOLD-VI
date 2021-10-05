@@ -289,7 +289,7 @@ class EncoderTrainer:
 
     def transform_offdiag(self, pred_offdiag):
         # Limit the magnitude of off-diagonal terms by pushing through a tanh
-        return tf.tanh(pred_offdiag)*3.0
+        return tf.tanh(pred_offdiag)*np.exp(-2.0)
 
     def inv_transform_std(self, std):
         return tf.math.atanh((std+1.0) / 3.0)
@@ -297,8 +297,8 @@ class EncoderTrainer:
     def forward_transform(self, logits):
         # Define the forward transform of the predicted parameters to OEF/DBV
         oef, dbv = tf.split(logits, 2, -1)
-        oef = tf.nn.sigmoid(oef) * self._oef_range + self._min_oef
-        dbv = tf.nn.sigmoid(dbv) * self._dbv_range + self._min_dbv
+        oef = (tf.nn.sigmoid(oef) * self._oef_range) + self._min_oef
+        dbv = (tf.nn.sigmoid(dbv) * self._dbv_range) + self._min_dbv
         output = tf.concat([oef, dbv], axis=-1)
         return output
 
@@ -389,11 +389,11 @@ class EncoderTrainer:
 
         # Scale our observation to 0-1 range
         x = self.backwards_transform(observations[:, 0:2], False)
-        epsilon = 1e-5
+        epsilon = 1e-6
         x = tfp.math.clip_by_value_preserve_gradient(x, epsilon, 1.0 - epsilon)
         loss = gaussian_nll_chol(logit(x), tf.stack([oef_mean, dbv_mean], -1), oef_log_std,
                                  self.transform_offdiag(predicted_params[:, 4]), dbv_log_std)
-        loss = loss + tf.reduce_sum(tf.math.log(x*(1.0-x)), -1)
+        loss = loss + tf.reduce_sum(tf.math.log(x) + tf.math.log(1.0-x), -1)
         loss = tf.reshape(loss, original_shape)
         return loss
 
@@ -427,12 +427,9 @@ class EncoderTrainer:
         dbv_log_std = tf.reshape(dbv_log_std, (-1, 1))
         oef_dbv_cov = tf.reshape(oef_dbv_cov, (-1, 1))
 
-        tl = tf.exp(oef_log_std)
-        br = tf.exp(dbv_log_std)
-        od = oef_dbv_cov
-        inv_tl = 1.0 / tl
-        inv_br = 1.0 / br
-        inv_bl = inv_tl * od * inv_br * -1.0
+        inv_tl = tf.exp(oef_log_std * -1.0)
+        inv_br = tf.exp(dbv_log_std * -1.0)
+        inv_bl = tf.exp(oef_log_std*-1.0 + dbv_log_std*-1.0) * oef_dbv_cov * -1.0
         residual = obs - mean
         whitened_residual_oef = residual[:, 0:1] * inv_tl
         whitened_residual_dbv = residual[:, 1:2] * inv_br + residual[:, 0:1] * inv_bl
