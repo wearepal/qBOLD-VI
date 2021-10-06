@@ -372,7 +372,7 @@ def train_model(config_dict):
 
     if config_dict.adamw_decay > 0.0:
         full_optimiser = tfa.optimizers.AdamW(weight_decay=LRSchedule(config_dict.adamw_decay),
-                                              learning_rate=LRSchedule(config_dict.ft_lr))
+                                              learning_rate=LRSchedule(config_dict.ft_lr), beta_2=0.9)
     else:
         full_optimiser = tf.keras.optimizers.Adam(learning_rate=LRSchedule(config_dict.ft_lr))
 
