@@ -92,35 +92,41 @@ class EncoderTrainer:
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
 
+    def normalise_data(self, _data):
+        # Do the normalisation as part of the model rather than as pre-processing
+        orig_shape = tf.shape(_data)
+        _data = tf.reshape(_data, (-1, _data.shape[-1]))
+        _data = tf.clip_by_value(_data, 1e-2, 1e8)
+        if self._multi_image_normalisation:
+            # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
+            _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
+        else:
+            _data = _data / tf.reduce_mean(_data[:, 2:3], -1, keepdims=True)
+        # Take the logarithm
+        log_data = tf.math.log(_data)
+        log_data = tf.reshape(log_data, orig_shape)
+
+        # _data = tf.reshape(_data, orig_shape)
+        # return tf.concat([_data, log_data], -1)
+        return log_data
+
+    def create_layer(self, _no_units, activation='default'):
+        # if activation is 'default', use the value in the class. 
+        if activation == 'default':
+            activation = self._activation_type
+        ki = tf.keras.initializers.HeNormal()
+        return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), kernel_initializer=ki, activation=activation)
+
     def create_encoder(self, system_constants=None, gate_offset=0.0, resid_init_std=1e-1, no_ip_images=11):
         """
         @params: system_constants (array): If not None, perform a dense transformation and multiply with first level representation
         @params: gate_offset (float): How much to offset the initial gating towards the MLP
         @params: resid_init_std (float): std dev for weights in the residual gated network
         """
-        ki = tf.keras.initializers.HeNormal()
+
         ki_resid = tf.keras.initializers.RandomNormal(stddev=resid_init_std)
 
-        def create_layer(_no_units, activation=self._activation_type):
-            return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), kernel_initializer=ki, activation=activation)
 
-        def normalise_data(_data):
-            # Do the normalisation as part of the model rather than as pre-processing
-            orig_shape = tf.shape(_data)
-            _data = tf.reshape(_data, (-1, no_ip_images))
-            _data = tf.clip_by_value(_data, 1e-2, 1e8)
-            if self._multi_image_normalisation:
-                # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
-                _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
-            else:
-                _data = _data / tf.reduce_mean(_data[:, 2:3], -1, keepdims=True)
-            # Take the logarithm
-            log_data = tf.math.log(_data)
-            log_data = tf.reshape(log_data, orig_shape)
-
-            #_data = tf.reshape(_data, orig_shape)
-            #return tf.concat([_data, log_data], -1)
-            return log_data
 
         def add_normalizer(_net):
             # Possibly add dropout and a normalization layer, depending on the dropout_rate and use_layer_norm values
@@ -133,7 +139,7 @@ class EncoderTrainer:
 
         def create_block(_net_in, _net2_in, no_units):
             # Straightforward 1x1x1 convs for the pre-training network
-            conv_layer = create_layer(no_units)
+            conv_layer = self.create_layer(no_units)
             _net = conv_layer(_net_in)
 
             # Apply the same 1x1x1 conv as for stream 1 for the skip connection
@@ -167,10 +173,10 @@ class EncoderTrainer:
 
         input_layer = keras.layers.Input(shape=(None, None, None, no_ip_images), ragged=False)
 
-        first_conv_ip = keras.layers.Lambda(normalise_data)(input_layer)
+        first_conv_ip = keras.layers.Lambda(self.normalise_data)(input_layer)
 
         # Make an initial 1x1x1 layer
-        first_conv_op = create_layer(self._no_units)(first_conv_ip)
+        first_conv_op = self.create_layer(self._no_units)(first_conv_ip)
         # Make an input following the initial layer, to be used for transferring to different data
         after_first_conv_input = keras.layers.Input(shape=(None, None, None, self._no_units), ragged=False)
 
@@ -185,7 +191,7 @@ class EncoderTrainer:
             no_outputs = 5
 
         # Create the final layer, which produces a mean and variance for OEF and DBV
-        final_layer = create_layer(no_outputs, activation=None)
+        final_layer = self.create_layer(no_outputs, activation=None)
 
         # Create an output that just looks at individual voxels
         output = final_layer(net1)
