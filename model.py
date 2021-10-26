@@ -92,25 +92,17 @@ class EncoderTrainer:
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
 
-    def create_encoder(self, use_conv=True, system_constants=None, gate_offset=0.0, resid_init_std=1e-1):
+    def create_encoder(self, system_constants=None, gate_offset=0.0, resid_init_std=1e-1):
         """
-        @param: use_conv (Boolean) : whether to use a convolution (1x1x1) or MLP model
         @params: system_constants (array): If not None, perform a dense transformation and multiply with first level representation
-        @params: no_units (unsigned int): The number of units for each level of the network
-        @params: use_layer_norm (Boolean) : Perform layer normalisation
-        @params: dropout_rate (float, 0-1) : perform dropout
-        @params: no_intermediate layers (unsigned int) : the number of extra layers apart from the first and last
+        @params: gate_offset (float): How much to offset the initial gating towards the MLP
+        @params: resid_init_std (float): std dev for weights in the residual gated network
         """
-        l2_weight = 0.0#1e-3
         ki = tf.keras.initializers.HeNormal()
         ki_resid = tf.keras.initializers.RandomNormal(stddev=resid_init_std)
 
         def create_layer(_no_units, activation=self._activation_type):
-            if use_conv:
-                return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), kernel_initializer=ki,
-                                           activation=activation, kernel_regularizer=tf.keras.regularizers.l2(l2_weight))
-            else:
-                return keras.layers.Dense(_no_units, activation=activation)
+            return keras.layers.Conv3D(_no_units, kernel_size=(1, 1, 1), kernel_initializer=ki, activation=activation)
 
         def normalise_data(_data):
             # Do the normalisation as part of the model rather than as pre-processing
@@ -129,15 +121,6 @@ class EncoderTrainer:
             #_data = tf.reshape(_data, orig_shape)
             #return tf.concat([_data, log_data], -1)
             return log_data
-
-        if use_conv:
-            input = keras.layers.Input(shape=(None, None, None, 11), ragged=False)
-        else:
-            input = keras.layers.Input(shape=(11,))
-
-        net = input
-
-        net = keras.layers.Lambda(normalise_data)(net)
 
         def add_normalizer(_net):
             # Possibly add dropout and a normalization layer, depending on the dropout_rate and use_layer_norm values
@@ -158,11 +141,11 @@ class EncoderTrainer:
             # Do a residual block
             _net2 = add_normalizer(_net2_in)
             _net2 = tf.keras.layers.Activation(self._activation_type)(_net2)
-            _net2 = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki_resid, kernel_regularizer=tf.keras.regularizers.l2(l2_weight))(
+            _net2 = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki_resid)(
                 _net2)
             _net2 = add_normalizer(_net2)
             _net2 = tf.keras.layers.Activation(self._activation_type)(_net2)
-            _net2 = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki_resid, kernel_regularizer=tf.keras.regularizers.l2(l2_weight))(
+            _net2 = keras.layers.Conv3D(no_units, kernel_size=(3, 3, 1), padding='same', kernel_initializer=ki_resid)(
                 _net2)
 
             # Choose the number of gating units (either channelwise or shared) for the skip vs. 1x1x1 convs
@@ -182,10 +165,16 @@ class EncoderTrainer:
 
             return _net, _net2
 
-        # Make an initial 1x1x1 layer
-        net1 = create_layer(self._no_units)(net)
+        input_layer = keras.layers.Input(shape=(None, None, None, 11), ragged=False)
 
-        net2 = net1
+        first_conv_ip = keras.layers.Lambda(normalise_data)(input_layer)
+
+        # Make an initial 1x1x1 layer
+        first_conv_op = create_layer(self._no_units)(first_conv_ip)
+        # Make an input following the initial layer, to be used for transferring to different data
+        after_first_conv_input = keras.layers.Input(shape=(None, None, None, self._no_units), ragged=False)
+
+        net2 = net1 = after_first_conv_input
         no_units = self._no_units
         # Create some number of convolution layers for stream 1 and gated residual blocks for stream 2
         for i in range(self._no_intermediate_layers):
@@ -217,8 +206,11 @@ class EncoderTrainer:
                                              activation=tf.exp)
         im_sigma = im_sigma_layer(net2)
 
-        # Create the model with two outputs, one with 3x3 convs for fine-tuning, and one without.
-        return keras.Model(inputs=[input], outputs=[output, second_net, im_sigma])
+        # Create the inner model with two outputs, one with 3x3 convs for fine-tuning, and one without.
+        inner_model = keras.Model(inputs=[after_first_conv_input], outputs=[output, second_net, im_sigma])
+        # The outer model, calls the inner model but with an initial convolution from the input data
+        outer_model = keras.Model(inputs=[input_layer], outputs=inner_model(first_conv_op))
+        return outer_model, inner_model
 
     def scale_uncertainty(self, q_z, uncertainty_factor):
         # Scale the uncertainty by a factor (used to avoid taking massive samples)

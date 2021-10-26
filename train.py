@@ -254,7 +254,7 @@ def train_model(config_dict):
                              predict_log_data=config_dict.predict_log_data
                              )
 
-    model = trainer.create_encoder(gate_offset=config_dict.gate_offset, resid_init_std=config_dict.resid_init_std)
+    model, inner_model = trainer.create_encoder(gate_offset=config_dict.gate_offset, resid_init_std=config_dict.resid_init_std)
 
     if True:#not config_dict.use_population_prior:
         def synth_loss(x, y):
