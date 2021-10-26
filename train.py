@@ -275,8 +275,40 @@ def train_model(config_dict):
             trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/pt_hyperv',
                                      transform_directory=transform_dir_hyperv)
 
+    no_taus = len(np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step'])))
+    input_3d = keras.layers.Input((None, None, 8, no_taus))
+    input_mask = keras.layers.Input((None, None, 8, 1))
+    params['simulate_noise'] = 'False'
+    sig_gen_layer = SignalGenerationLayer(params, config_dict.full_model, config_dict.use_blood)
+    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
+
+    train_full_model(config_dict, trainer, full_model, study_dataset, train_dataset)
+    trainer.estimate_population_param_distribution(model, baseline_data)
+
+    if config_dict.save_directory is not None:
+        if not os.path.exists(config_dict.save_directory):
+            os.makedirs(config_dict.save_directory)
+        model.save_weights(config_dict.save_directory + '/final_model.h5')
+        trainer.save_predictions(model, baseline_with_brain_mask, config_dict.save_directory + '/baseline',
+                                 transform_directory=transform_dir_baseline, use_first_op=False, fine_tuner_model=full_model,
+                                 priors=baseline_priors)
+
+        trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/hyperv',
+                                 transform_directory=transform_dir_hyperv, use_first_op=False, fine_tuner_model=full_model,
+                                 priors=hyperv_priors)
+
+    # Load the synthetic dataset and create some priors for it
+    params['tau_start'] = '-0.028'
+    params['tau_step'] = '0.004'
+
+    transfer_data = np.load(f'{config_dict.d}/streamlined_ase.npy')
+    transfer_data = transfer_data[:, :, :, :, :-1]
+    model_transfer, trainer_transfer, _ = create_and_train_on_synthetic_data(config_dict, params)
+
+    transfer_dataset = prepare_dataset(transfer_data, model_transfer, config_dict.crop_size)
 
 
+def train_full_model(config_dict, trainer, full_model, study_dataset, train_dataset):
     class LRSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
         def __init__(self, initial_learning_rate):
             self.initial_learning_rate = initial_learning_rate
@@ -291,8 +323,8 @@ def train_model(config_dict):
                  tf.pow(tf.cast(0.9, tf.float32), tf.cast((1.0 + (x_recomp - c) / self.steps_per_epoch), tf.float32))
 
             final_lr = self.initial_learning_rate / 1e2
-            linear_rate = (final_lr - self.initial_learning_rate) / (40.0*self.steps_per_epoch - const_until)
-            op = self.initial_learning_rate + linear_rate*(x_recomp-c)
+            linear_rate = (final_lr - self.initial_learning_rate) / (40.0 * self.steps_per_epoch - const_until)
+            op = self.initial_learning_rate + linear_rate * (x_recomp - c)
 
             value = tf.case([(x_recomp > c, lambda: op)], default=lambda: self.initial_learning_rate)
 
@@ -303,14 +335,8 @@ def train_model(config_dict):
                                               learning_rate=LRSchedule(config_dict.ft_lr), beta_2=0.9)
     else:
         full_optimiser = tf.keras.optimizers.Adam(learning_rate=LRSchedule(config_dict.ft_lr))
-
-    input_3d = keras.layers.Input((None, None, 8, 11))
-    input_mask = keras.layers.Input((None, None, 8, 1))
-    params['simulate_noise'] = 'False'
-    sig_gen_layer = SignalGenerationLayer(params, config_dict.full_model, config_dict.use_blood)
-    full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
-
     kl_var = tf.Variable(1.0, trainable=False)
+
     def fine_tune_loss(x, y):
         return trainer.fine_tune_loss_fn(x, y)
 
@@ -338,8 +364,9 @@ def train_model(config_dict):
                     nll += fine_tune_loss(y['predicted_images'], predictions['predicted_images'])
                 nll = nll / 10.0
                 nll_total = nll + nll_total
-                kl_total = kl_total +  trainer.kl_loss(y['predictions'], predictions['predictions'])
-                smoothness_total = smoothness_total + trainer.smoothness_loss(y['predictions'], predictions['predictions'])
+                kl_total = kl_total + trainer.kl_loss(y['predictions'], predictions['predictions'])
+                smoothness_total = smoothness_total + trainer.smoothness_loss(y['predictions'],
+                                                                              predictions['predictions'])
 
             nll = nll_total / no_batches
             kl = kl_total / no_batches
@@ -370,33 +397,8 @@ def train_model(config_dict):
                              'predictions': predictions_loss},
                        metrics={'predictions': [smoothness_metric, kl_metric],
                                 'predicted_images': sigma_metric})
-
     callbacks = [WandbCallback(), elbo_callback, tf.keras.callbacks.TerminateOnNaN()]
-
     full_model.fit(train_dataset, steps_per_epoch=100, epochs=config_dict.no_ft_epochs, callbacks=callbacks)
-    trainer.estimate_population_param_distribution(model, baseline_data)
-
-    if config_dict.save_directory is not None:
-        if not os.path.exists(config_dict.save_directory):
-            os.makedirs(config_dict.save_directory)
-        model.save_weights(config_dict.save_directory + '/final_model.h5')
-        trainer.save_predictions(model, baseline_with_brain_mask, config_dict.save_directory + '/baseline',
-                                 transform_directory=transform_dir_baseline, use_first_op=False, fine_tuner_model=full_model,
-                                 priors=baseline_priors)
-
-        trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/hyperv',
-                                 transform_directory=transform_dir_hyperv, use_first_op=False, fine_tuner_model=full_model,
-                                 priors=hyperv_priors)
-
-    # Load the synthetic dataset and create some priors for it
-    params['tau_start'] = '-0.028'
-    params['tau_step'] = '0.004'
-
-    transfer_data = np.load(f'{config_dict.d}/streamlined_ase.npy')
-    transfer_data = transfer_data[:, :, :, :, :-1]
-    model_transfer, trainer_transfer, _ = create_and_train_on_synthetic_data(config_dict, params)
-
-    transfer_dataset = prepare_dataset(transfer_data, model_transfer, config_dict.crop_size)
 
 
 def create_and_train_on_synthetic_data(config_dict, params):
