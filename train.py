@@ -100,7 +100,7 @@ def prepare_synthetic_dataset(x, y):
     # 1x1x1 convs for pre-training
     if train_conv:
         # Reshape to being more image like for layer normalisation (if we use this)
-        x = np.reshape(x, (-1, 10, 10, 5, 11))
+        x = np.reshape(x, (-1, 10, 10, 5, x.shape[-1]))
         y = np.reshape(y, (-1, 10, 10, 5, 3))
 
     # Separate into training/testing data
@@ -224,79 +224,7 @@ def train_model(config_dict):
     config.read('config')
     params = config['DEFAULT']
 
-    config_dict.no_intermediate_layers = max(1, config_dict.no_intermediate_layers)
-    config_dict.no_units = max(1, config_dict.no_units)
-
-    optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
-    if config_dict.use_swa:
-        optimiser = tfa.optimizers.AdamW(weight_decay=2e-4, learning_rate=config_dict.pt_lr)
-        optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22*40, average_period=22)
-    #optimiser = tfa.optimizers.MovingAverage(optimiser)
-
-    """if wb_config.use_system_constants:
-        system_constants = get_constants(params)
-    else:
-        system_constants = None"""
-
-    trainer = EncoderTrainer(system_params=params,
-                             no_units=config_dict.no_units,
-                             use_layer_norm=config_dict.use_layer_norm,
-                             dropout_rate=config_dict.dropout_rate,
-                             no_intermediate_layers=config_dict.no_intermediate_layers,
-                             student_t_df=config_dict.student_t_df,
-                             initial_im_sigma=config_dict.im_loss_sigma,
-                             activation_type=config_dict.activation,
-                             multi_image_normalisation=config_dict.multi_image_normalisation,
-                             channelwise_gating=config_dict.channelwise_gating,
-                             infer_inv_gamma=config_dict.infer_inv_gamma,
-                             use_population_prior=config_dict.use_population_prior,
-                             use_mvg=config_dict.use_mvg,
-                             predict_log_data=config_dict.predict_log_data
-                             )
-
-    model, inner_model = trainer.create_encoder(gate_offset=config_dict.gate_offset, resid_init_std=config_dict.resid_init_std)
-
-    if True:#not config_dict.use_population_prior:
-        def synth_loss(x, y):
-            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss, config_dict.inv_gamma_alpha,
-                                               config_dict.inv_gamma_beta)
-
-        def oef_metric(x, y):
-            return trainer.oef_metric(x, y)
-
-        def dbv_metric(x, y):
-            return trainer.dbv_metric(x, y)
-
-        def r2p_metric(x, y):
-            return trainer.r2p_metric(x, y)
-
-        def oef_alpha_metric(x, y):
-            return y[0, 0, 0, 0, 4]
-
-        def oef_beta_metric(x, y):
-            return y[0, 0, 0, 0, 5]
-
-        def dbv_alpha_metric(x, y):
-            return y[0, 0, 0, 0, 6]
-
-        def dbv_beta_metric(x, y):
-            return y[0, 0, 0, 0, 7]
-
-        metrics = [oef_metric, dbv_metric, r2p_metric]
-        if config_dict.infer_inv_gamma:
-            metrics.extend([oef_alpha_metric, oef_beta_metric, dbv_beta_metric, dbv_alpha_metric])
-        model.compile(optimiser, loss=[synth_loss, None, None],
-                      metrics=[metrics, None, None])
-
-        # x, y = load_synthetic_dataset(args.f)
-        x, y = create_synthetic_dataset(params, config_dict.full_model, config_dict.use_blood,
-                                        config_dict.misalign_prob, uniform_prop=config_dict.uniform_prop)
-        synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(x, y)
-        model.fit(synthetic_dataset, epochs=config_dict.no_pt_epochs, validation_data=synthetic_validation,
-                  callbacks=[tf.keras.callbacks.TerminateOnNaN()])
-
-        del synthetic_dataset
-        del synthetic_validation
+    model, trainer, inner_model = create_and_train_on_synthetic_data(config_dict, params)
 
     if not os.path.exists(config_dict.d):
         raise Exception('Real data directory not found')
@@ -459,6 +387,85 @@ def train_model(config_dict):
         trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/hyperv',
                                  transform_directory=transform_dir_hyperv, use_first_op=False, fine_tuner_model=full_model,
                                  priors=hyperv_priors)
+
+    # Load the synthetic dataset and create some priors for it
+    params['tau_start'] = '-0.028'
+    params['tau_step'] = '0.004'
+
+    transfer_data = np.load(f'{config_dict.d}/streamlined_ase.npy')
+    transfer_data = transfer_data[:, :, :, :, :-1]
+    model_transfer, trainer_transfer, _ = create_and_train_on_synthetic_data(config_dict, params)
+
+    transfer_dataset = prepare_dataset(transfer_data, model_transfer, config_dict.crop_size)
+
+
+def create_and_train_on_synthetic_data(config_dict, params):
+    config_dict.no_intermediate_layers = max(1, config_dict.no_intermediate_layers)
+    config_dict.no_units = max(1, config_dict.no_units)
+    optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
+    if config_dict.use_swa:
+        optimiser = tfa.optimizers.AdamW(weight_decay=2e-4, learning_rate=config_dict.pt_lr)
+        optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22 * 40, average_period=22)
+    trainer = EncoderTrainer(system_params=params,
+                             no_units=config_dict.no_units,
+                             use_layer_norm=config_dict.use_layer_norm,
+                             dropout_rate=config_dict.dropout_rate,
+                             no_intermediate_layers=config_dict.no_intermediate_layers,
+                             student_t_df=config_dict.student_t_df,
+                             initial_im_sigma=config_dict.im_loss_sigma,
+                             activation_type=config_dict.activation,
+                             multi_image_normalisation=config_dict.multi_image_normalisation,
+                             channelwise_gating=config_dict.channelwise_gating,
+                             infer_inv_gamma=config_dict.infer_inv_gamma,
+                             use_population_prior=config_dict.use_population_prior,
+                             use_mvg=config_dict.use_mvg,
+                             predict_log_data=config_dict.predict_log_data
+                             )
+    taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
+    model, inner_model = trainer.create_encoder(gate_offset=config_dict.gate_offset,
+                                                resid_init_std=config_dict.resid_init_std, no_ip_images=len(taus))
+    if True:  # not config_dict.use_population_prior:
+        def synth_loss(x, y):
+            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss, config_dict.inv_gamma_alpha,
+                                               config_dict.inv_gamma_beta)
+
+        def oef_metric(x, y):
+            return trainer.oef_metric(x, y)
+
+        def dbv_metric(x, y):
+            return trainer.dbv_metric(x, y)
+
+        def r2p_metric(x, y):
+            return trainer.r2p_metric(x, y)
+
+        def oef_alpha_metric(x, y):
+            return y[0, 0, 0, 0, 4]
+
+        def oef_beta_metric(x, y):
+            return y[0, 0, 0, 0, 5]
+
+        def dbv_alpha_metric(x, y):
+            return y[0, 0, 0, 0, 6]
+
+        def dbv_beta_metric(x, y):
+            return y[0, 0, 0, 0, 7]
+
+        metrics = [oef_metric, dbv_metric, r2p_metric]
+        if config_dict.infer_inv_gamma:
+            metrics.extend([oef_alpha_metric, oef_beta_metric, dbv_beta_metric, dbv_alpha_metric])
+        model.compile(optimiser, loss=[synth_loss, None, None],
+                      metrics=[metrics, None, None])
+
+        # x, y = load_synthetic_dataset(args.f)
+        x, y = create_synthetic_dataset(params, config_dict.full_model, config_dict.use_blood,
+                                        config_dict.misalign_prob, uniform_prop=config_dict.uniform_prop)
+        synthetic_dataset, synthetic_validation = prepare_synthetic_dataset(x, y)
+        model.fit(synthetic_dataset, epochs=config_dict.no_pt_epochs, validation_data=synthetic_validation,
+                  callbacks=[tf.keras.callbacks.TerminateOnNaN()])
+
+        del synthetic_dataset
+        del synthetic_validation
+    return model, trainer, inner_model
 
 
 if __name__ == '__main__':

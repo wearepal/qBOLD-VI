@@ -92,7 +92,7 @@ class EncoderTrainer:
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
 
-    def create_encoder(self, system_constants=None, gate_offset=0.0, resid_init_std=1e-1):
+    def create_encoder(self, system_constants=None, gate_offset=0.0, resid_init_std=1e-1, no_ip_images=11):
         """
         @params: system_constants (array): If not None, perform a dense transformation and multiply with first level representation
         @params: gate_offset (float): How much to offset the initial gating towards the MLP
@@ -107,7 +107,7 @@ class EncoderTrainer:
         def normalise_data(_data):
             # Do the normalisation as part of the model rather than as pre-processing
             orig_shape = tf.shape(_data)
-            _data = tf.reshape(_data, (-1, 11))
+            _data = tf.reshape(_data, (-1, no_ip_images))
             _data = tf.clip_by_value(_data, 1e-2, 1e8)
             if self._multi_image_normalisation:
                 # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
@@ -165,7 +165,7 @@ class EncoderTrainer:
 
             return _net, _net2
 
-        input_layer = keras.layers.Input(shape=(None, None, None, 11), ragged=False)
+        input_layer = keras.layers.Input(shape=(None, None, None, no_ip_images), ragged=False)
 
         first_conv_ip = keras.layers.Lambda(normalise_data)(input_layer)
 
@@ -200,16 +200,18 @@ class EncoderTrainer:
         second_net = final_layer(net2)
 
         # Predict heteroscedastic variances
-        im_sigma_layer = keras.layers.Conv3D(11, kernel_size=(1, 1, 1),
+        im_sigma_layer = keras.layers.Conv3D(no_ip_images, kernel_size=(1, 1, 1),
                                              kernel_initializer=tf.keras.initializers.RandomNormal(stddev=resid_init_std),
                                              bias_initializer=tf.keras.initializers.Constant(np.log(self._initial_im_sigma)),
                                              activation=tf.exp)
-        im_sigma = im_sigma_layer(net2)
 
         # Create the inner model with two outputs, one with 3x3 convs for fine-tuning, and one without.
-        inner_model = keras.Model(inputs=[after_first_conv_input], outputs=[output, second_net, im_sigma])
+        inner_model = keras.Model(inputs=[after_first_conv_input], outputs=[output, second_net, net2])
+
+        _output, _second_net, _net2 = inner_model(first_conv_op)
+        sigma_pred = im_sigma_layer(_net2)
         # The outer model, calls the inner model but with an initial convolution from the input data
-        outer_model = keras.Model(inputs=[input_layer], outputs=inner_model(first_conv_op))
+        outer_model = keras.Model(inputs=[input_layer], outputs=[_output, _second_net, sigma_pred])
         return outer_model, inner_model
 
     def scale_uncertainty(self, q_z, uncertainty_factor):
@@ -518,9 +520,10 @@ class EncoderTrainer:
         # Deal with multiple samples by concatenating
         y_true = tf.concat([y_true for x in range(self._no_samples)], 0)
         mask = y_true[:, :, :, :, -1:]
+        no_images = y_true.shape[-1]-1
         if self._heteroscedastic_noise:
             y_pred, sigma = tf.split(y_pred, 2, -1)
-            sigma = tf.reshape(sigma, (-1, 11))
+            sigma = tf.reshape(sigma, (-1, no_images))
         else:
             sigma = tf.reduce_mean(y_pred[:, :, :, :, -1:])
             y_pred = y_pred[:, :, :, :, :-1]
@@ -539,7 +542,7 @@ class EncoderTrainer:
 
         # Calculate the residual difference between our normalised data
         residual = y_true[:, :, :, :, :-1] - y_pred
-        residual = tf.reshape(residual, (-1, 11))
+        residual = tf.reshape(residual, (-1, no_images))
         mask = tf.reshape(mask, (-1, 1))
 
         # Optionally use a student-t distribution (with heavy tails) or a Gaussian distribution if dof >= 50
@@ -820,7 +823,7 @@ class EncoderTrainer:
                 kl_map = np.reshape(kl_map, data.shape[0:4] + (1,))
             save_im_data(kl_map, filename + '_kl')
             #y_pred, predicted_sigma = tf.split(y_pred, 2, -1)
-            y_pred = y_pred[:, :, :, :, :11]
+            y_pred = y_pred[:, :, :, :, :y_true.shape[-1]-1]
             if self._multi_image_normalisation:
                 y_true = y_true / (np.mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
                 y_pred = y_pred / (np.mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
