@@ -809,11 +809,10 @@ class EncoderTrainer:
                 likelihood_map_list.append(likelihood_map_tmp)
 
             ave_likelihood_map = tf.reduce_mean(tf.stack(likelihood_map_list, -1), -1)
-
+            # Extract the mask
             mask = data[:, :, :, :, -1:]
+            # Remove the mask from y_true
             y_true = data[:, :, :, :, :-1]
-
-
 
             if self._use_population_prior:
                 dists = tf.split(pred_dist, self._mog_components+1, -1)
@@ -829,7 +828,8 @@ class EncoderTrainer:
                 kl_map = np.reshape(kl_map, data.shape[0:4] + (1,))
             save_im_data(kl_map, filename + '_kl')
             #y_pred, predicted_sigma = tf.split(y_pred, 2, -1)
-            y_pred = y_pred[:, :, :, :, :y_true.shape[-1]-1]
+            # Take the first n channels from y_pred, which correspond to the mean image prediction.
+            y_pred = y_pred[:, :, :, :, :y_true.shape[-1]]
             if self._multi_image_normalisation:
                 y_true = y_true / (np.mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
                 y_pred = y_pred / (np.mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
