@@ -91,6 +91,8 @@ class EncoderTrainer:
         self._min_dbv = 0.001
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
+        # Store the spin-echo index
+        self._se_idx = int(abs(float(system_params['tau_start'])/float(system_params['tau_step'])))
 
     def normalise_data(self, _data):
         # Do the normalisation as part of the model rather than as pre-processing
@@ -99,9 +101,9 @@ class EncoderTrainer:
         _data = tf.clip_by_value(_data, 1e-2, 1e8)
         if self._multi_image_normalisation:
             # Normalise based on the mean of tau =0 and adjacent tau values to minimise the effects of noise
-            _data = _data / tf.reduce_mean(_data[:, 1:4], -1, keepdims=True)
+            _data = _data / tf.reduce_mean(_data[:, self._se_idx-1:self._se_idx+2], -1, keepdims=True)
         else:
-            _data = _data / tf.reduce_mean(_data[:, 2:3], -1, keepdims=True)
+            _data = _data / tf.reduce_mean(_data[:, self._se_idx:self._se_idx+1], -1, keepdims=True)
         # Take the logarithm
         log_data = tf.math.log(_data)
         log_data = tf.reshape(log_data, orig_shape)
@@ -536,11 +538,11 @@ class EncoderTrainer:
 
         # Normalise and mask the predictions/real data
         if self._multi_image_normalisation:
-            y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
-            y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+            y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, self._se_idx-1:self._se_idx+2], -1, keepdims=True) + 1e-3)
+            y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, self._se_idx-1:self._se_idx+2], -1, keepdims=True) + 1e-3)
         else:
-            y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
-            y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
+            y_true = y_true / (tf.reduce_mean(y_true[:, :, :, :, self._se_idx:self._se_idx+1], -1, keepdims=True) + 1e-3)
+            y_pred = y_pred / (tf.reduce_mean(y_pred[:, :, :, :, self._se_idx:self._se_idx+1], -1, keepdims=True) + 1e-3)
 
         if self._predict_log_data:
             y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
@@ -787,11 +789,14 @@ class EncoderTrainer:
         means, log_stds = self.calculate_means(predictions, tf.ones_like(predictions[:, :, :, :, :1]), include_r2p=True, return_stds=True, no_samples=200)
 
         def save_im_data(im_data, _filename):
-            existing_nib = nib.load(transform_directory + '/example.nii.gz')
-            new_header = existing_nib.header.copy()
             images = np.split(im_data, im_data.shape[0], axis=0)
             images = np.squeeze(np.concatenate(images, axis=-1), 0)
-            array_img = nib.Nifti1Image(images, None, header=new_header)
+            if transform_directory is not None:
+                existing_nib = nib.load(transform_directory + '/example.nii.gz')
+                new_header = existing_nib.header.copy()
+                array_img = nib.Nifti1Image(images, None, header=new_header)
+            else:
+                array_img = nib.Nifti1Image(images, None)
 
             nib.save(array_img, _filename + '.nii.gz')
         oef, dbv, r2p = tf.split(means, 3, -1)
@@ -831,11 +836,11 @@ class EncoderTrainer:
             # Take the first n channels from y_pred, which correspond to the mean image prediction.
             y_pred = y_pred[:, :, :, :, :y_true.shape[-1]]
             if self._multi_image_normalisation:
-                y_true = y_true / (np.mean(y_true[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
-                y_pred = y_pred / (np.mean(y_pred[:, :, :, :, 1:4], -1, keepdims=True) + 1e-3)
+                y_true = y_true / (np.mean(y_true[:, :, :, :, self._se_idx-1:self._se_idx+2], -1, keepdims=True) + 1e-3)
+                y_pred = y_pred / (np.mean(y_pred[:, :, :, :, self._se_idx-1:self._se_idx+2], -1, keepdims=True) + 1e-3)
             else:
-                y_true = y_true / (np.mean(y_true[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
-                y_pred = y_pred / (np.mean(y_pred[:, :, :, :, 2:3], -1, keepdims=True) + 1e-3)
+                y_true = y_true / (np.mean(y_true[:, :, :, :, self._se_idx:self._se_idx+1], -1, keepdims=True) + 1e-3)
+                y_pred = y_pred / (np.mean(y_pred[:, :, :, :, self._se_idx:self._se_idx+1], -1, keepdims=True) + 1e-3)
 
             residual = np.mean(tf.abs(y_true - y_pred), -1, keepdims=True)
             save_im_data(residual, filename + '_residual')
