@@ -114,10 +114,14 @@ class SignalGenerationLayer(keras.layers.Layer):
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
 
         if self._simulate_noise:
-            # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
-            norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
+            if signal.shape[-1] == 11:
+                # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
+                norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
+            elif signal.shape[-1] == 24:
+                norm_snr = 1.0-(np.abs(np.arange(-0.028, 0.065, 0.004))*3.0)
+
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
-            snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, 11))
+            snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, signal.shape[-1]))
             # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
             std_dev = tf.reduce_mean(signal, 0, keepdims=True) / snr
             # Add noise at the correct level
@@ -161,7 +165,7 @@ class SignalGenerationLayer(keras.layers.Layer):
             # in integrand....
             a = tf.constant(1e-5, dtype=tf.float32)
             b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
-            int_parts = tf.linspace(a, b, 2 ** 8 + 1)
+            int_parts = tf.linspace(a, b, 2 ** 7 + 1)
             return tf.math.exp(-dbv_i * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
                     1.0 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus * dw_i, -1)) * int_parts))
                                                  / (3.0 * tf.square(int_parts)), int_parts)) \
