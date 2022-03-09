@@ -204,20 +204,70 @@ def prepare_image(image_filename):
         mask_cmd = ['bet', mean_image, dir_name + '/mask_' + basename + '.nii.gz', '-R', '-Z', '-m', '-n']
         subprocess.run(mask_cmd)
 
+    # The following is code to calculate GM maps from data without T1s. It doesn't work very well so probably
+    # should not be used.
+    if False: #path.exists(ase_gm) == False and path.exists(dir_name+'/T1.nii') == False:
+        mean_image_to_std = dir_name + '/tmean_' + basename + '_to_std.mat'
+        std_to_image = dir_name + '/tmean_' + basename + '_from_std.mat'
+        if True:
+            ero_brain_mask = dir_name + '/mask_' + basename + '_mask_erode.nii.gz'
+            cmd = 'fslmaths ' + brain_mask + ' -kernel boxv3 11 11 1 -ero ' + ero_brain_mask
+            system(cmd)
+            cmd = 'flirt -in ' + mean_image + \
+                  ' -ref /Users/is321/Documents/Data/qBold/hyperv_data/MNI152_T1_2mm.nii.gz ' \
+                  ' -omat ' \
+                  + mean_image_to_std + ' -usesqform -dof 6 '# -searchrz -20 20 -searchrx -20 20 -searchry -20 20 '
+            if 'SUP' in basename:
+                cmd = cmd + ' -searchcost normcorr -cost normcorr '
+            else:
+                cmd = cmd + ' -inweight ' + ero_brain_mask #+ ' -refweight /Users/is321/Documents/Data/qBold/hyperv_data/MNI152_T1_2mm_brain_mask.nii.gz '
+            system(cmd)
+
+            """cmd = 'flirt -in ' + mean_image + \
+                  ' -ref /Users/is321/Documents/Data/qBold/hyperv_data/MNI152_T1_2mm.nii.gz ' \
+                  ' -omat ' \
+                  + mean_image_to_std + ' -dof 12 -init ' + mean_image_to_std + ' -searchrz -10 10 -searchrx -10 10 -searchry -10 10 '
+            if 'SUP' in basename:
+                cmd = cmd + ' -searchcost normcorr -cost normcorr '
+            else:
+                cmd = cmd + ' -inweight ' + ero_brain_mask  # + ' -refweight /Users/is321/Documents/Data/qBold/hyperv_data/MNI152_T1_2mm_brain_mask.nii.gz '
+
+            system(cmd)"""
+            cmd = 'convert_xfm -omat ' + std_to_image + ' -inverse ' + mean_image_to_std
+            system(cmd)
+
+        if False:
+            cmd = 'flirt -ref ' + mean_image + \
+                  ' -in /Users/is321/Documents/Data/qBold/hyperv_data/MNI152_T1_2mm.nii.gz -omat ' \
+                  + std_to_image + ' -refweight ' + brain_mask + ' -usesqform -searchrz -30 30 -searchrx -30 30 -searchry -30 30'
+            system(cmd)
+
+        masked_image = dir_name + '/tmean_' + basename + '_masked.nii.gz'
+        cmd = 'fslmaths ' + mean_image + ' -mas ' + brain_mask + ' ' + masked_image
+        system(cmd)
+
+        cmd = 'fast -a ' + std_to_image + ' -R 0.2 -P -l 60 ' + masked_image
+        system(cmd)
+
+        cmd = 'fslmaths ' + dir_name + '/tmean_' + basename + '_masked_pve_1.nii.gz -thr 0.2 -bin -mas ' + \
+              brain_mask + ' ' + ase_gm
+        system(cmd)
+
     img = nib.load(mc_images)
-    qform = img.header.get_qform(coded=False)
     img_data = img.get_fdata()
 
     mask_img = nib.load(brain_mask)
 
-    gm_img = nib.load(ase_gm)
-
+    if path.isfile(ase_gm):
+        gm_img = nib.load(ase_gm)
+    else:
+        gm_img = mask_img
     img_data = np.concatenate([img_data, np.expand_dims(gm_img.get_fdata(), -1),
                                np.expand_dims(mask_img.get_fdata(), -1)], -1)
     return img_data
 
 
-def prepare_data(directory, orig_filebasename):
+def prepare_data(directory, orig_filebasename, include_warp=True, save_name=None, average_n_slices=1):
     """
     Parse all the data in the directory and saves it as a single .npz file (we don't have *that* much data).
     @param: orig_filebase is the basename of the file that we are looking for
@@ -226,35 +276,94 @@ def prepare_data(directory, orig_filebasename):
     from os import remove, path
     import tarfile
 
-    filename = orig_filebasename + '.nii*'
-    results = glob(directory + '*/' + filename)
+    if save_name is None:
+        save_name = orig_filebasename
 
-    shape = None
-    data = []
-    tar_file = directory + '/warp_info' + orig_filebasename + '.tar.gz'
-    if path.exists(tar_file):
-        remove(tar_file)
+    if True:
+        filename = orig_filebasename + '.nii*'
+        results = glob(directory + '*/' + filename)
 
-    tar = tarfile.open(tar_file, 'x:gz')
+        shape = None
+        data = []
 
-    seg_masks_merge_cmd = 'fslmerge -t ' + directory + '/' + orig_filebasename + '_gm'
+        if include_warp:
+            tar_file = directory + '/warp_info' + orig_filebasename + '.tar.gz'
+            if path.exists(tar_file):
+                remove(tar_file)
 
-    for idx, im_filename in enumerate(results):
-        image_data = prepare_image(im_filename)
-        nonlin, gm_im = register_to_t1(im_filename)
-        seg_masks_merge_cmd = seg_masks_merge_cmd + " " + gm_im
-        tar.add(nonlin, arcname='nonlin' + str(idx) + '.nii.gz')
-        if shape is None:
-            shape = image_data.shape
+            tar = tarfile.open(tar_file, 'x:gz')
 
-        if shape == image_data.shape:
-            data.append(image_data)
+            seg_masks_merge_cmd = 'fslmerge -t ' + directory + '/' + orig_filebasename + '_gm'
 
-    tar.close()
+        for idx, im_filename in enumerate(results):
+            image_data = prepare_image(im_filename)
 
-    if len(data) > 0:
-        np.save(directory + '/' + orig_filebasename, data)
-    system(seg_masks_merge_cmd)
+            if include_warp:
+                nonlin, gm_im = register_to_t1(im_filename)
+                seg_masks_merge_cmd = seg_masks_merge_cmd + " " + gm_im
+                tar.add(nonlin, arcname='nonlin' + str(idx) + '.nii.gz')
 
-prepare_data(data_dir, "baseline_ase")
+            if shape is None:
+                shape = image_data.shape
+
+            if shape == image_data.shape:
+                if average_n_slices > 1:
+                    image_data = image_data.reshape((image_data.shape[0], image_data.shape[1], -1, average_n_slices, image_data.shape[-1]))
+                    image_data = np.mean(image_data, 3)
+                    image_data = np.concatenate([image_data[:, :, :, :-2], (image_data[:, :, :, -2:]>=0.5).astype(image_data.dtype)], -1)
+                data.append(image_data)
+        if include_warp:
+            tar.close()
+            system(seg_masks_merge_cmd)
+
+        if len(data) > 0:
+            np.save(directory + '/' + save_name, data)
+
+    if True:
+        filename = orig_filebasename + '.nii*'
+        search_path = directory + '*/' + filename
+        path_elements = search_path.split('/')
+        path_elements[-1] = 'tmean_' + path_elements[-1]
+        new_path = '/'.join(path_elements)
+        results = glob(new_path)
+
+        mean_ase_merge_cmd = 'fslmerge -t ' + directory + '/' + save_name + '_tmean'
+        for result in results:
+            mean_ase_merge_cmd = mean_ase_merge_cmd + " " + result
+        system(mean_ase_merge_cmd)
+
+        filename = orig_filebasename + '.nii*'
+        search_path = directory + '*/' + filename
+        path_elements = search_path.split('/')
+        path_elements[-1] = 'mask_' + path_elements[-1].split('.')[0] + '_mask.nii*'
+        new_path = '/'.join(path_elements)
+        results = glob(new_path)
+        print(new_path)
+        mean_ase_merge_cmd = 'fslmerge -t ' + directory + '/' + save_name + '_mask'
+        for result in results:
+            mean_ase_merge_cmd = mean_ase_merge_cmd + " " + result
+        system(mean_ase_merge_cmd)
+
+#prepare_data(data_dir, "baseline_ase")
+#prepare_data('/Users/is321/Documents/Data/qBold/data02/', 'ASE_INF')
+
+prepare_data('/Users/is321/Documents/Data/qBold/streamlined-qBOLD_study/', 'func/sub-*_task-csfnull_rec-filtered_ase',
+             include_warp=False, save_name='streamlined_ase', average_n_slices=4)
+
+def reslice_images(filename, binarise=False):
+    mask_nib = nib.load(filename)
+    new_header = mask_nib.header.copy()
+    data = mask_nib.get_fdata()
+    original_type = data.dtype
+    original_shape = data.shape
+    new_data = np.mean(data.reshape((original_shape[0], original_shape[1], -1, 4, original_shape[-1])), axis=-2)
+    if binarise:
+        new_data = (new_data >=0.5).astype(original_type)
+    array_img = nib.Nifti1Image(new_data, None, header=new_header)
+    nib.save(array_img, filename)
+
+
+reslice_images('/Users/is321/Documents/Data/qBold/streamlined-qBOLD_study/' + '/streamlined_ase_mask.nii.gz', True)
+reslice_images('/Users/is321/Documents/Data/qBold/streamlined-qBOLD_study/' + '/streamlined_ase_tmean.nii.gz')
+
 # estimate_noise_level(data)
