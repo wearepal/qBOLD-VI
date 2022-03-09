@@ -114,10 +114,14 @@ class SignalGenerationLayer(keras.layers.Layer):
         signal = tissue_weight * tissue_signal + blood_weight * blood_signal
 
         if self._simulate_noise:
-            # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
-            norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
+            if signal.shape[-1] == 11:
+                # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
+                norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
+            elif signal.shape[-1] == 24:
+                norm_snr = 1.0-(np.abs(np.arange(-0.028, 0.065, 0.004))*3.0)
+
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
-            snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, 11))
+            snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, signal.shape[-1]))
             # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
             std_dev = tf.reduce_mean(signal, 0, keepdims=True) / snr
             # Add noise at the correct level
@@ -161,7 +165,7 @@ class SignalGenerationLayer(keras.layers.Layer):
             # in integrand....
             a = tf.constant(1e-5, dtype=tf.float32)
             b = tf.constant(1, dtype=tf.float32)  # upper limit for integration
-            int_parts = tf.linspace(a, b, 2 ** 8 + 1)
+            int_parts = tf.linspace(a, b, 2 ** 7 + 1)
             return tf.math.exp(-dbv_i * integral((2 + int_parts) * tf.math.sqrt(1 - int_parts) * (
                     1.0 - tf.math.special.bessel_j0(1.5 * (tf.expand_dims(self._taus * dw_i, -1)) * int_parts))
                                                  / (3.0 * tf.square(int_parts)), int_parts)) \
@@ -209,30 +213,59 @@ class SignalGenerationLayer(keras.layers.Layer):
         :param oef: A tensor containing the the oef values from each parameter pair
         :return: The signal contribution from venous blood
         """
-        # R2b taken from Cherukara code - where is this derived from?
-        r2b = 4.5 + 16.4 * hct + (165.2 * hct + 55.7) * oef ** 2
-        td = 0.0045067
-        # Why is the 4pi missing from the squared term here? Missing in cherukara code as well.
-        g0 = (4 / 45) * hct * (1 - hct) * ((self._dchi * self._b0 * oef) ** 2)
+        # Cherukara code
+        if False:
+            # R2b comes from Golay et al. 2001
+            r2b = 4.5 + 16.4 * hct + (165.2 * hct + 55.7) * oef ** 2
+            td = 0.0045067
+            # Why is the 4pi missing from the squared term here? Missing in cherukara code as well. Also not clear where
+            # the 0.14e-6 comes from...
+            g0 = (4 / 45) * hct * (1 - hct) * ( self._b0 * (self._dchi * oef + 0.14e-6)) ** 2
 
-        signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
-                                                             ((self._te / td) + tf.math.sqrt(
-                                                                 0.25 + (self._te / td)) + 1.5 -
-                                                              (2 * tf.math.sqrt(
-                                                                  0.25 + (((self._te + self._taus) ** 2) / td))) -
-                                                              (2 * tf.math.sqrt(
-                                                                  0.25 + (((self._te - self._taus) ** 2) / td)))))
+            signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
+                                                                 ((self._te / td) + tf.math.sqrt(
+                                                                     0.25 + (self._te / td)) + 1.5 -
+                                                                  (2.0 * tf.math.sqrt(
+                                                                      0.25 + (((self._te + self._taus) ** 2) / td))) -
+                                                                  (2.0 * tf.math.sqrt(
+                                                                      0.25 + (((self._te - self._taus) ** 2) / td)))))
+        # Cherukara maths
+        if True:
+            # Constants taken from Berman et al. 2018
+            r2b = 1.0/0.189
+            td = (2.6**2.0)/2.0
+            # Convert to seconds
+            td = td * 1e-3
+            g0 = (4 / 45) * hct * (1 - hct) * (4.0 * math.pi * self._b0 * self._dchi * oef) ** 2
+
+            signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
+                                                                 ((self._te / td) + tf.math.sqrt(
+                                                                     0.25 + (self._te / td)) + 1.5 -
+                                                                  (2.0 * tf.math.sqrt(
+                                                                      0.25 + ((self._te + self._taus) / td))) -
+                                                                  (2.0 * tf.math.sqrt(
+                                                                      0.25 + ((self._te - self._taus) / td)))))
         return signals
 
 
-def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, variable_hct=False):
+def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, variable_hct=False, uniform_prop=0.1):
+    import tensorflow_probability as tfp
     sig_layer = SignalGenerationLayer(params, full_model, use_blood, misaligned_prob=misaligned_prob,
                                       variable_hct=variable_hct)
-
-    oefs = tf.random.uniform((int(params['sample_size']),), minval=float(params['oef_start']),
+    oefs = tf.random.uniform((round(int(params['sample_size'])*uniform_prop),), minval=float(params['oef_start']),
                              maxval=float(params['oef_end']))
-    dbvs = tf.random.uniform((int(params['sample_size']),), minval=float(params['dbv_start']),
+
+    oefs_n = tf.random.normal((round(int(params['sample_size'])*(1.0-uniform_prop)),)) * float(params['oef_std']) + float(params['oef_mean'])
+    oefs_n = tf.clip_by_value(oefs_n, float(params['oef_start']), float(params['oef_end']))
+    oefs = tf.concat([oefs, oefs_n], 0)
+
+    dbvs = tf.random.uniform((round(int(params['sample_size']) * uniform_prop),), minval=float(params['dbv_start']),
                              maxval=float(params['dbv_end']))
+
+    dbvs_n = tf.cast(tfp.distributions.TruncatedNormal(loc=float(params['dbv_mean']), scale=float(params['dbv_std']),
+                                                       low=float(params['dbv_start']), high=float(params['dbv_end'])).
+                     sample((round(int(params['sample_size'])*(1.0-uniform_prop)),)), tf.float32)
+    dbvs = tf.concat([dbvs, dbvs_n], 0)
 
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
     train_y = tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], axis=1)
