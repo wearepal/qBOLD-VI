@@ -28,4 +28,5 @@ resid_init_std: 0.05
 use_mvg: True
 uniform_prop: 0.0
 adamw_decay: 2e-4
+pt_adamw_decay: 2e-4
 predict_log_data: False
