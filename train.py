@@ -13,28 +13,13 @@ from tensorflow import keras
 import tensorflow_addons as tfa
 import wandb
 from wandb.keras import WandbCallback
-import matplotlib.pyplot as plt
 
-
-def get_constants(params):
-    # Put the system constants into an array
-    dchi = float(params['dchi'])
-    hct = float(params['hct'])
-    te = float(params['te'])
-    r2t = float(params['r2t'])
-    tr = float(params['tr'])
-    ti = float(params['ti'])
-    t1b = float(params['t1b'])
-    consts = np.array([dchi, hct, te, r2t, tr, ti, t1b], dtype=np.float32)
-    taus = tf.range(float(params['tau_start']), float(params['tau_end']),
-                    float(params['tau_step']), dtype=tf.float32)
-    consts = tf.concat([consts, taus], 0)
-    consts = tf.reshape(consts, (1, -1))
-    return consts
-
-def prepare_dataset(real_data, model, crop_size=20, training=True):
-    # Prepare the real data, crop out more in the x-dimension to avoid risk of lots of empty voxels
-    real_data = np.float32(real_data[:, 17:-17, 10:-10, :, :])
+def prepare_dataset(real_data, model, crop_size=20, training=True, blank_crop=True):
+    if blank_crop:
+        # Prepare the real data, crop out more in the x-dimension to avoid risk of lots of empty voxels
+        real_data = np.float32(real_data[:, 17:-17, 10:-10, :, :])
+    else:
+        real_data = np.float32(real_data)
 
     _crop_size = [min(crop_size, real_data.shape[1]), min(crop_size, real_data.shape[2])]
     # Mask the data and make some predictions to provide a prior distribution
@@ -77,13 +62,13 @@ def prepare_dataset(real_data, model, crop_size=20, training=True):
         return (data[:, :, :, :-1], mask), {'predictions': predicted_distribution, 'predicted_images': data}
 
     real_dataset = real_dataset.map(map_func2)
+    real_dataset = real_dataset.repeat(-1)
     if training:
         real_dataset = real_dataset.shuffle(10000)
         real_dataset = real_dataset.batch(38, drop_remainder=True)
     else:
         real_dataset = real_dataset.batch(3, drop_remainder=True)
 
-    real_dataset = real_dataset.repeat(-1)
     return real_dataset
 
 
@@ -156,6 +141,7 @@ def setup_argparser(defaults_dict):
     parser.add_argument('--uniform_prop', type=float, default=defaults_dict['uniform_prop'])
     parser.add_argument('--use_swa', type=bool, default=defaults_dict['use_swa'])
     parser.add_argument('--adamw_decay', type=float, default=defaults_dict['adamw_decay'])
+    parser.add_argument('--pt_adamw_decay', type=float, default=defaults_dict['pt_adamw_decay'])
     parser.add_argument('--predict_log_data', type=bool, default=defaults_dict['predict_log_data'])
 
     return parser
@@ -193,38 +179,27 @@ def get_defaults():
         use_mvg=False,
         uniform_prop=0.1,
         use_swa=True,
-        adamw_decay=1e-4,
+        adamw_decay=2e-4,
+        pt_adamw_decay=2e-4,
         predict_log_data=True
     )
     return defaults
-
-def plot_distribution(trainer):
-    eps = 1e-4
-    num_samples = 1000
-    oefs = tf.linspace(trainer._min_oef + eps, trainer._min_oef + trainer._oef_range - eps, num_samples)
-    dbvs = tf.linspace(trainer._min_dbv + eps, trainer._min_dbv + trainer._dbv_range - eps, num_samples)
-    xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
-    xx = tf.reshape(xx, (-1, 1, 1, 1, 1))
-    yy = tf.reshape(yy, (-1, 1, 1, 1, 1))
-
-    dist = tf.reshape([-0.5, -0.25, -2.0, -0.25, -0.07], (1, 1, 1, 1, -1))
-    dist = tf.concat([dist for x in range(xx.shape[0])], 0)
-    obs = tf.concat([xx, yy], -1)
-    log_loss = trainer.logit_gaussian_mvg_log_prob(tf.reshape(obs, (-1, 2)), dist)
-
-    print(tf.math.reduce_logsumexp(-log_loss - tf.math.log(float(num_samples) ** 2)))
-
-    plt.imshow(tf.reshape(log_loss, (num_samples, num_samples)), vmax=np.percentile(log_loss, 50))
-    plt.colorbar()
-    plt.show()
-
 
 def train_model(config_dict):
     config = configparser.ConfigParser()
     config.read('config')
     params = config['DEFAULT']
 
-    model, trainer, inner_model = create_and_train_on_synthetic_data(config_dict, params)
+    pt_model_weights = config_dict.save_directory + '/pt_model.h5'
+    final_model_weights = config_dict.save_directory + '/final_model.h5'
+    pt_transfer_model_weights = config_dict.save_directory + '/pt_transfer_model.h5'
+    transfer_model_weights = config_dict.save_directory + '/transfer_model.h5'
+    if os.path.isfile(pt_model_weights):
+        model, inner_model, trainer = create_encoder_model(config_dict, params)
+        model.load_weights(pt_model_weights)
+    else:
+        model, trainer, inner_model = create_and_train_on_synthetic_data(config_dict, params)
+        model.save_weights(config_dict.save_directory + '/pt_model.h5')
 
     if not os.path.exists(config_dict.d):
         raise Exception('Real data directory not found')
@@ -282,33 +257,33 @@ def train_model(config_dict):
     sig_gen_layer = SignalGenerationLayer(params, config_dict.full_model, config_dict.use_blood)
     full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
 
-    train_full_model(config_dict, trainer, full_model, study_dataset, train_dataset)
+    if os.path.isfile(final_model_weights):
+        model.load_weights(final_model_weights)
+    else:
+        train_full_model(config_dict, trainer, full_model, study_dataset, train_dataset)
+
     trainer.estimate_population_param_distribution(model, baseline_data)
 
-    if config_dict.save_directory is not None:
+    if (config_dict.save_directory is not None) and (os.path.isfile(final_model_weights) is False):
         if not os.path.exists(config_dict.save_directory):
             os.makedirs(config_dict.save_directory)
-        model.save_weights(config_dict.save_directory + '/final_model.h5')
+        model.save_weights(final_model_weights)
+
         trainer.save_predictions(model, baseline_with_brain_mask, config_dict.save_directory + '/baseline',
-                                 transform_directory=transform_dir_baseline, use_first_op=False, fine_tuner_model=full_model,
+                                 transform_directory=transform_dir_baseline, use_first_op=False,
+                                 fine_tuner_model=full_model,
                                  priors=baseline_priors)
 
         trainer.save_predictions(model, hyperv_with_brain_mask, config_dict.save_directory + '/hyperv',
                                  transform_directory=transform_dir_hyperv, use_first_op=False, fine_tuner_model=full_model,
                                  priors=hyperv_priors)
 
-    # Load the synthetic dataset and create some priors for it
-    params['tau_start'] = '-0.028'
-    params['tau_step'] = '0.004'
-
-    transfer_data = np.load(f'{config_dict.d}/streamlined_ase.npy')
-    transfer_data = transfer_data[:, :, :, :, :-1]
-    model_transfer, trainer_transfer, _ = create_and_train_on_synthetic_data(config_dict, params)
-
-    transfer_dataset = prepare_dataset(transfer_data, model_transfer, config_dict.crop_size)
+    del train_dataset
+    del study_dataset
 
 
 def train_full_model(config_dict, trainer, full_model, study_dataset, train_dataset):
+    assert isinstance(trainer, EncoderTrainer)
     class LRSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
         def __init__(self, initial_learning_rate):
             self.initial_learning_rate = initial_learning_rate
@@ -402,30 +377,12 @@ def train_full_model(config_dict, trainer, full_model, study_dataset, train_data
 
 
 def create_and_train_on_synthetic_data(config_dict, params):
-    config_dict.no_intermediate_layers = max(1, config_dict.no_intermediate_layers)
-    config_dict.no_units = max(1, config_dict.no_units)
+    model, inner_model, trainer = create_encoder_model(config_dict, params)
+
     optimiser = tf.keras.optimizers.Adam(learning_rate=config_dict.pt_lr)
     if config_dict.use_swa:
-        optimiser = tfa.optimizers.AdamW(weight_decay=2e-4, learning_rate=config_dict.pt_lr)
+        optimiser = tfa.optimizers.AdamW(weight_decay=config_dict.pt_adamw_decay, learning_rate=config_dict.pt_lr)
         optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22 * 40, average_period=22)
-    trainer = EncoderTrainer(system_params=params,
-                             no_units=config_dict.no_units,
-                             use_layer_norm=config_dict.use_layer_norm,
-                             dropout_rate=config_dict.dropout_rate,
-                             no_intermediate_layers=config_dict.no_intermediate_layers,
-                             student_t_df=config_dict.student_t_df,
-                             initial_im_sigma=config_dict.im_loss_sigma,
-                             activation_type=config_dict.activation,
-                             multi_image_normalisation=config_dict.multi_image_normalisation,
-                             channelwise_gating=config_dict.channelwise_gating,
-                             infer_inv_gamma=config_dict.infer_inv_gamma,
-                             use_population_prior=config_dict.use_population_prior,
-                             use_mvg=config_dict.use_mvg,
-                             predict_log_data=config_dict.predict_log_data
-                             )
-    taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
-    model, inner_model = trainer.create_encoder(gate_offset=config_dict.gate_offset,
-                                                resid_init_std=config_dict.resid_init_std, no_ip_images=len(taus))
     if True:  # not config_dict.use_population_prior:
         def synth_loss(x, y):
             return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss, config_dict.inv_gamma_alpha,
@@ -468,6 +425,30 @@ def create_and_train_on_synthetic_data(config_dict, params):
         del synthetic_dataset
         del synthetic_validation
     return model, trainer, inner_model
+
+
+def create_encoder_model(config_dict, params):
+    config_dict.no_intermediate_layers = max(1, config_dict.no_intermediate_layers)
+    config_dict.no_units = max(1, config_dict.no_units)
+    trainer = EncoderTrainer(system_params=params,
+                             no_units=config_dict.no_units,
+                             use_layer_norm=config_dict.use_layer_norm,
+                             dropout_rate=config_dict.dropout_rate,
+                             no_intermediate_layers=config_dict.no_intermediate_layers,
+                             student_t_df=config_dict.student_t_df,
+                             initial_im_sigma=config_dict.im_loss_sigma,
+                             activation_type=config_dict.activation,
+                             multi_image_normalisation=config_dict.multi_image_normalisation,
+                             channelwise_gating=config_dict.channelwise_gating,
+                             infer_inv_gamma=config_dict.infer_inv_gamma,
+                             use_population_prior=config_dict.use_population_prior,
+                             use_mvg=config_dict.use_mvg,
+                             predict_log_data=config_dict.predict_log_data
+                             )
+    taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
+    model, inner_model = trainer.create_encoder(gate_offset=config_dict.gate_offset,
+                                                resid_init_std=config_dict.resid_init_std, no_ip_images=len(taus))
+    return model, inner_model, trainer
 
 
 if __name__ == '__main__':
