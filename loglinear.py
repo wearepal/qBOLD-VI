@@ -12,11 +12,15 @@ import os
 
 def save_predictions(predictions, filename, transform_directory):
     def save_im_data(im_data, _filename):
-        existing_nib = nib.load(transform_directory + '/example.nii.gz')
-        new_header = existing_nib.header.copy()
         images = np.split(im_data, im_data.shape[0], axis=0)
         images = np.squeeze(np.concatenate(images, axis=-1), 0)
-        array_img = nib.Nifti1Image(images, None, header=new_header)
+
+        if transform_directory is not None:
+            existing_nib = nib.load(transform_directory + '/example.nii.gz')
+            new_header = existing_nib.header.copy()
+            array_img = nib.Nifti1Image(images, None, header=new_header)
+        else:
+            array_img = nib.Nifti1Image(images, None)
 
         nib.save(array_img, _filename + '.nii.gz')
 
@@ -119,11 +123,15 @@ if __name__ == '__main__':
     tr = float(params['tr'])
     ti = float(params['ti'])
     t1b = float(params['t1b'])
-    taus = np.arange(float(params['tau_start']), float(params['tau_end']),
-                     float(params['tau_step']), dtype=np.float32)
+    taus = np.around(np.arange(float(params['tau_start']), float(params['tau_end']),
+                               float(params['tau_step']), dtype=np.float32), decimals=7)
 
-    data_dir = '/its/home/is321/data/qbold/'
+    data_dir = '/home/data/qbold/'
+    op_dir = 'wls_clip'
+    if os.path.exists(op_dir) == False:
+        os.mkdir(op_dir)
 
+    """
     hyperv_data = np.load(data_dir+'/hyperv_ase.npy')
     hyperv_data = hyperv_data[:, :, :, :, :-2]
     baseline_data = np.load(data_dir+'/baseline_ase.npy')
@@ -132,11 +140,19 @@ if __name__ == '__main__':
     transform_dir_baseline = data_dir + '/transforms_baseline/'
     transform_dir_hyperv = data_dir+ '/transforms_hyperv/'
 
-
-    op_dir = 'wls_clip'
-    if os.path.exists(op_dir) == False:
-        os.mkdir(op_dir)
     oef, dbv, r2p = fit_wls(baseline_data)
     save_predictions([oef, dbv, r2p], op_dir+'/baseline', transform_directory=transform_dir_baseline)
     oef, dbv, r2p = fit_wls(hyperv_data)
     save_predictions([oef, dbv, r2p], op_dir+'/hyperv', transform_directory=transform_dir_hyperv)
+    """
+
+    params['tau_start'] = '-0.028'
+    params['tau_step'] = '0.004'
+    taus = np.around(np.arange(float(params['tau_start']), float(params['tau_end']),
+                     float(params['tau_step']), dtype=np.float32), decimals=7)
+    streamlined_data = np.load(data_dir + '/streamlined_ase.npy')
+
+    oef, dbv, r2p = fit_wls(streamlined_data[:, :, :, :, :-2])
+
+    save_predictions([oef, dbv, r2p], op_dir + '/streamlined', transform_directory=None)
+
