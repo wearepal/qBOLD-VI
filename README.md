@@ -1,4 +1,15 @@
-# qBOLD-Kit
-A toolkit for working with qBOLD signals
+# qBOLD-VI
+This codebase provides a method for learning an amortized variational inference model for inferring the Oxygen Extraction Fraction and Deoxygenated Blood Volume from qBOLD data.
 
-Use -h after script names to see how arguments are used.
+The code is arranged such that:
+* signals.py generates the synthetic data, and contains the forward model for the observed qBOLD data.
+* model.py: Contains all of the machine learning model specification. 
+* train.py: Contains the functionality to train the model, requires a .yaml configuration file as input 
+* data_preprocessing.py, pre-processes the qBOLD images into numpy arrays. This will need to be adapted to new datasets.
+
+Please note that I am currently refactoring this code to decouple some elements of the model, particularly the logit-Normal distribution. Please get in touch if you find any issues.
+
+The training code uses [weights and biases (wandb)](wandb.ai) to track experiments and 
+perform hyper-parameter optimisation.
+The hyper-parameters are specified in YAML files, an example using the optimal configuration is provided in 
+configurations/optimal.yaml

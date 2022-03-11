@@ -4,7 +4,7 @@ student_t_df: 200  # Switching to None will use a Gaussian error distribution
 pt_lr: 2e-3
 ft_lr: 5e-3
 kl_weight: 1.0
-smoothness_weight: 7.5
+smoothness_weight: 5.0
 dropout_rate: 0.0
 no_pt_epochs: 60
 no_ft_epochs: 40
