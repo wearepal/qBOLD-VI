@@ -13,3 +13,5 @@ The training code uses [weights and biases (wandb)](wandb.ai) to track experimen
 perform hyper-parameter optimisation.
 The hyper-parameters are specified in YAML files, an example using the optimal configuration is provided in 
 configurations/optimal.yaml
+
+The model is described in the preprint "Flexible Amortized Variational Inference in qBOLD MRI" here [https://arxiv.org/abs/2203.05845](https://arxiv.org/abs/2203.05845)
