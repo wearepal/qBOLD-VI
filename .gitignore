@@ -7,3 +7,4 @@
 *.nii*
 *.pdf
 *.png
+/venv/
