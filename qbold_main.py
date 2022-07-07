@@ -45,7 +45,7 @@ def setup_argparser(defaults_dict):
 
     return parser
 
-
+# These defaults would be used as a basis, and values here will be replaced if optimal.yaml is used
 def get_defaults():
     defaults = dict(
         no_units=30,

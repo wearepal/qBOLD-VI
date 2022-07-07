@@ -42,7 +42,7 @@ if __name__ == '__main__':
                 args['no_intermediate_layers'] = no_layers
                 args['no_units'] = no_units
                 args['name'] = orig_name + '-' + str(no_layers) + '-' + str(no_units) + '-' + str(run_idx)
-                wandb.init(project='qbold_inference', entity='kasiamoj')
+                wandb.init(project='qbold_inference', entity='ivorsimpson')
                 wandb.run.name = args['name']
                 wandb.config.update(args)
                 train_model(wandb.config)

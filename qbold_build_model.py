@@ -20,13 +20,15 @@ class ModelBuilder:
 
     def build_model(self):
         params = self.get_params()
-        pt_model_weights = self.config_dict['save_directory'] + '/pt_model.h5'
-
-        model, inner_model, trainer = self.create_encoder_model(self.config_dict, params)
 
         if not os.path.isdir(self.config_dict['save_directory']):
             mkdir = 'mkdir optimal'
             os.system(mkdir)
+
+        pt_model_weights = self.config_dict['save_directory'] + '/pt_model.h5'
+
+        model, inner_model, trainer = self.create_encoder_model(self.config_dict, params)
+
         if not os.path.isfile(pt_model_weights):
             model = self.create_and_train_on_synthetic_data(model, inner_model, trainer, params)
             model.save_weights(pt_model_weights)
