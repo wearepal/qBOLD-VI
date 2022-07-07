@@ -1,7 +1,6 @@
 import numpy as np
 import argparse
 import tensorflow as tf
-import wandb
 from qbold_train_model import ModelTrainer
 
 
@@ -9,7 +8,6 @@ def setup_argparser(defaults_dict):
     parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
 
     parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
-    parser.add_argument('-d', default='/its/home/km675/qbold', help='path to the real data directory')
     parser.add_argument('--no_units', type=int, default=defaults_dict['no_units'])
     parser.add_argument('--no_pt_epochs', type=int, default=defaults_dict['no_pt_epochs'])
     parser.add_argument('--no_ft_epochs', type=int, default=defaults_dict['no_ft_epochs'])
@@ -70,7 +68,7 @@ def get_defaults():
         use_blood=True,
         misalign_prob=0.0,
         use_population_prior=True,
-        use_wandb=True,
+        use_wandb=False,
         inv_gamma_alpha=0.0,
         inv_gamma_beta=0.0,
         gate_offset=0.0,
@@ -97,10 +95,23 @@ if __name__ == '__main__':
     np.random.seed(1)
 
     yaml_file = None
+    d = None
+    tau_start = None
+    tau_step = None
+    tau_end = None
     # If we have a single argument and it's a yaml file, read the config from there
-    if (len(sys.argv) == 2) and (".yaml" in sys.argv[1]):
+    if (len(sys.argv) >= 2) and (".yaml" in sys.argv[1]):
         # Read the yaml filename
         yaml_file = sys.argv[1]
+        if (len(sys.argv) >= 3) and isinstance(sys.argv[2], str):
+            d = sys.argv[2]
+        if (len(sys.argv) == 6):
+            try:
+                tau_start = float(sys.argv[3])
+                tau_end = float(sys.argv[4])
+                tau_step = float(sys.argv[5])
+            except ValueError:
+                print("Incorrect values provided for tau start end and step")
         # Remove it from the input arguments to also allow the default argparser
         sys.argv = [sys.argv[0]]
 
@@ -117,17 +128,13 @@ if __name__ == '__main__':
             else:
                 args[key] = val
 
-    if args['use_wandb']:
-        wandb.init(project='qbold_inference', entity='kasiamoj')
-        if not args.get('name') is None:
-            wandb.run.name = args['name']
+    if d is not None:
+        args['d'] = d
+    if tau_start is not None and tau_step is not None and tau_end is not None:
+        args['tau_start'] = tau_start
+        args['tau_end'] = tau_end
+        args['tau_step'] = tau_step
 
-        wandb.config.update(args)
-        model_trainer = ModelTrainer(wandb.config)
-        model_trainer.build_model()
-        model_trainer.train_model()
-
-    else:
-        model_trainer = ModelTrainer(args)
-        model_trainer.build_model()
-        model_trainer.train_model()
+    model_trainer = ModelTrainer(args)
+    model_trainer.build_model()
+    model_trainer.train_model()

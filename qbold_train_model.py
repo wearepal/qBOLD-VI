@@ -19,8 +19,10 @@ class ModelTrainer(ModelBuilder):
 
     def train_model(self):
         params = self.get_params()
-        final_model_weights = self.config_dict.save_directory + '/final_model.h5'
-        pt_model_weights = self.config_dict.save_directory + '/pt_model.h5'
+        # final weights are trained on real data
+        final_model_weights = self.config_dict['save_directory'] + '/final_model.h5'
+        # pre-trained weights are trained on synthetic data
+        pt_model_weights = self.config_dict['save_directory'] + '/pt_model.h5'
         model, inner_model, trainer = self.create_encoder_model(self.config_dict, params)
 
         if os.path.isfile(pt_model_weights):
@@ -28,26 +30,25 @@ class ModelTrainer(ModelBuilder):
         else:
             print('Model has not been built: the weights file does not exist under /optimal/pt_model.h5')
 
-        if os.path.isfile(pt_model_weights):
-            model.load_weights(pt_model_weights)
-
         no_taus = len(np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step'])))
         input_3d = keras.layers.Input((None, None, 8, no_taus))
         input_mask = keras.layers.Input((None, None, 8, 1))
         params['simulate_noise'] = 'False'
-        sig_gen_layer = SignalGenerationLayer(params, self.config_dict.full_model, self.config_dict.use_blood)
+        # Generate
+        sig_gen_layer = SignalGenerationLayer(params, self.config_dict['full_model'], self.config_dict['use_blood'])
 
         full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
 
-        hyperv_dir = f'{self.config_dict.d}/hyperv_ase.npy'
+        data_directory = self.config_dict['d']
+        hyperv_dir = f'{data_directory}/hyperv_ase.npy'
         hyperv_data = self.load_condition_data(hyperv_dir, False)
-        baseline_dir = f'{self.config_dict.d}/baseline_ase.npy'
+        baseline_dir = f'{data_directory}/baseline_ase.npy'
         baseline_data = self.load_condition_data(baseline_dir, False)
         study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
         study_dataset = self.prepare_dataset(study_data, model, 76, training=False)
 
         train_data = self.load_real_data()
-        train_dataset = self.prepare_dataset(train_data, model, self.config_dict.crop_size)
+        train_dataset = self.prepare_dataset(train_data, model, self.config_dict['crop_size'])
 
         if os.path.isfile(final_model_weights):
             model.load_weights(final_model_weights)
@@ -56,9 +57,9 @@ class ModelTrainer(ModelBuilder):
 
         trainer.estimate_population_param_distribution(model, baseline_data)
 
-        if (self.config_dict.save_directory is not None) and (os.path.isfile(final_model_weights) is False):
-            if not os.path.exists(self.config_dict.save_directory):
-                os.makedirs(self.config_dict.save_directory)
+        if (self.config_dict['save_directory'] is not None) and (os.path.isfile(final_model_weights) is False):
+            if not os.path.exists(self.config_dict['save_directory']):
+                os.makedirs(self.config_dict['save_directory'])
             model.save_weights(final_model_weights)
 
         del train_dataset
@@ -66,13 +67,14 @@ class ModelTrainer(ModelBuilder):
 
 
     def load_real_data(self):
-        if not os.path.exists(self.config_dict.d):
+        if not os.path.exists(self.config_dict['d']):
             raise Exception('Real data directory not found')
 
+        data_directory = self.config_dict['d']
         # Load real data for fine-tuning, using the model trained on synthetic data for priors
-        ase_data = np.load(f'{self.config_dict.d}/ASE_scan.npy')
-        ase_inf_data = np.load(f'{self.config_dict.d}/ASE_INF.npy')
-        ase_sup_data = np.load(f'{self.config_dict.d}/ASE_SUP.npy')
+        ase_data = np.load(f'{data_directory}/ASE_scan.npy')
+        ase_inf_data = np.load(f'{data_directory}/ASE_INF.npy')
+        ase_sup_data = np.load(f'{data_directory}/ASE_SUP.npy')
 
         return np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
 
@@ -110,11 +112,11 @@ class ModelTrainer(ModelBuilder):
             predicted_distribution_shape = predicted_distribution.shape.as_list()
             predicted_distribution = tf.reshape(predicted_distribution, new_shape)
 
-            # concatenate to crop
+            # Concatenate to crop
             crop_data = tf.concat([data, predicted_distribution], -1)
             crop_data = tf.image.random_crop(value=crop_data, size=_crop_size + crop_data.shape[-1:])
 
-            # Separate out again
+            # Separate out data and predicted distribution again
             predicted_distribution = crop_data[:, :, -predicted_distribution.shape.as_list()[-1]:]
             predicted_distribution = tf.reshape(predicted_distribution,
                                                 _crop_size + predicted_distribution_shape[-2:])
@@ -124,7 +126,7 @@ class ModelTrainer(ModelBuilder):
             mask = data[:, :, :, -1:]
 
             data = data[:, :, :, :-1] * data[:, :, :, -1:]
-            # concat the mask
+            # Concatenate the mask unto the data structure
             data = tf.concat([data, mask], -1)
 
             predicted_distribution = tf.concat([predicted_distribution, mask], -1)
@@ -165,11 +167,11 @@ class ModelTrainer(ModelBuilder):
 
                 return value
 
-        if self.config_dict.adamw_decay > 0.0:
-            full_optimiser = tfa.optimizers.AdamW(weight_decay=LRSchedule(self.config_dict.adamw_decay),
-                                                  learning_rate=LRSchedule(self.config_dict.ft_lr), beta_2=0.9)
+        if self.config_dict['adamw_decay'] > 0.0:
+            full_optimiser = tfa.optimizers.AdamW(weight_decay=LRSchedule(self.config_dict['adamw_decay']),
+                                                  learning_rate=LRSchedule(self.config_dict['ft_lr']), beta_2=0.9)
         else:
-            full_optimiser = tf.keras.optimizers.Adam(learning_rate=LRSchedule(self.config_dict.ft_lr))
+            full_optimiser = tf.keras.optimizers.Adam(learning_rate=LRSchedule(self.config_dict['ft_lr']))
         kl_var = tf.Variable(1.0, trainable=False)
 
         def fine_tune_loss(x, y):
@@ -177,7 +179,7 @@ class ModelTrainer(ModelBuilder):
 
         def predictions_loss(t, p):
             return trainer.kl_loss(t, p) * kl_var + \
-                   trainer.smoothness_loss(t, p) * self.config_dict.smoothness_weight
+                   trainer.smoothness_loss(t, p) * self.config_dict['smoothness_weight']
 
         def sigma_metric(t, p):
             return tf.reduce_mean(p[:, :, :, :, -1:])
@@ -233,4 +235,4 @@ class ModelTrainer(ModelBuilder):
                            metrics={'predictions': [smoothness_metric, kl_metric],
                                     'predicted_images': sigma_metric})
         callbacks = [WandbCallback(), elbo_callback, tf.keras.callbacks.TerminateOnNaN()]
-        full_model.fit(train_dataset, steps_per_epoch=100, epochs=self.config_dict.no_ft_epochs, callbacks=callbacks)
+        full_model.fit(train_dataset, steps_per_epoch=100, epochs=self.config_dict['no_ft_epochs'], callbacks=callbacks)
