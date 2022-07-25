@@ -1,0 +1,11 @@
+# To run the code, use to following command
+#
+# python qbold_main.py configurations/optimal.yaml data_directory tau_start tau_end tau_step
+#
+# python qbold_main.py /configurations/optimal.yaml ~/qbold -0.016 0.065 0.008
+#
+# If pt_model.h5 and final_model.h5 are saved within 'optimal' directory, these weights will be loaded
+# to estimate mean_oef, log_std_oef, mean_dbv, log_std_dbv
+#
+# If using Dockerfile, entrypoint allows specifying more arguments than just those provided in the ENTRYPOINT[],
+# so you can add on the data dir and tau values
