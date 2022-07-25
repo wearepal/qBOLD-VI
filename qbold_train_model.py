@@ -15,13 +15,13 @@ from signals import SignalGenerationLayer
 
 class ModelTrainer(ModelBuilder):
     def __init__(self, config_dict):
-        self.config_dict = config_dict
+        super().__init__(config_dict)
 
     def train_model(self):
         params = self.get_params()
         # final weights are trained on real data
         final_model_weights = self.config_dict['save_directory'] + '/final_model.h5'
-        # pre-trained weights are trained on synthetic data
+        # pre-trained weights    are trained on synthetic data
         pt_model_weights = self.config_dict['save_directory'] + '/pt_model.h5'
         model, inner_model, trainer = self.create_encoder_model(self.config_dict, params)
 
