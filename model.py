@@ -766,6 +766,7 @@ class EncoderTrainer:
         mean_dbv = tf.reduce_sum(dbv) / mask_pix
         std_dbv = tf.sqrt(tf.reduce_sum(tf.square(dbv - mean_dbv) * mask) / mask_pix)
         log_std_dbv = self.inv_transform_std(tf.math.log(std_dbv))
+        print('final results for mean_oef, log_std_oef, mean_dbv, log_std_dbv, respectively: ')
         print(mean_oef, log_std_oef, mean_dbv, log_std_dbv)
 
     def save_predictions(self, model, data, filename, transform_directory=None, use_first_op=True, fine_tuner_model=None,
