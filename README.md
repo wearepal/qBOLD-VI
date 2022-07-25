@@ -9,7 +9,7 @@ The code is arranged such that:
 
 Please note that I am currently refactoring this code to decouple some elements of the model, particularly the logit-Normal distribution. Please get in touch if you find any issues.
 
-An example Colab notebook that loads a pretrained model is available [https://colab.research.google.com/drive/1zJ6yu5-sr-wD4aKWpfFEGlkRGYJDaIuC?usp=sharing](here), although it should be noted that data is not yet public.
+An example Colab notebook that loads a pretrained model is available [here](https://colab.research.google.com/drive/1zJ6yu5-sr-wD4aKWpfFEGlkRGYJDaIuC?usp=sharing), although it should be noted that data is not yet public.
 
 The training code uses [weights and biases (wandb)](wandb.ai) to track experiments and 
 perform hyper-parameter optimisation.
