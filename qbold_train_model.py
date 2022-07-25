@@ -9,62 +9,142 @@ import tensorflow_addons as tfa
 import wandb
 from wandb.keras import WandbCallback
 
-from qbold_build_model import ModelBuilder
+from qbold_build_model import ModelBuilder, WeightStatus
 from signals import SignalGenerationLayer
 
 
 class ModelTrainer(ModelBuilder):
-    def __init__(self, config_dict):
-        super().__init__(config_dict)
+    def __init__(self, config_dict, system_params=None):
+        super().__init__(config_dict, system_params)
+        tf.random.set_seed(1)
+        np.random.seed(1)
+
+        if self.config_dict['wandb_project'] != '':
+            wandb.init(project=self.config_dict.wandb_project)
+            if self.config_dict.get('name') is None:
+                wandb.run.name = args['name']
+
+    def train_on_synthetic_data(self):
+        from signals import create_synthetic_dataset
+        # Check the model is not already fully trained
+        assert self.weight_status != WeightStatus.FULL_TRAINED
+
+        optimiser = tf.keras.optimizers.Adam(learning_rate=self.config_dict['pt_lr'])
+        if self.config_dict['use_swa']:
+            optimiser = tfa.optimizers.AdamW(weight_decay=self.config_dict['pt_adamw_decay'],
+                                             learning_rate=self.config_dict['pt_lr'])
+            optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22 * 40, average_period=22)
+
+        def synth_loss(_x, _y):
+            return self.trainer.synthetic_data_loss(_x, _y, self.config_dict['use_r2p_loss'],
+                                                    self.config_dict['inv_gamma_alpha'],
+                                                    self.config_dict['inv_gamma_beta'])
+
+        def oef_metric(_x, _y):
+            return self.trainer.oef_metric(_x, _y)
+
+        def dbv_metric(_x, _y):
+            return self.trainer.dbv_metric(_x, _y)
+
+        def r2p_metric(_x, _y):
+            return self.trainer.r2p_metric(_x, _y)
+
+        def oef_alpha_metric(_x, _y):
+            return _y[0, 0, 0, 0, 4]
+
+        def oef_beta_metric(_x, _y):
+            return _y[0, 0, 0, 0, 5]
+
+        def dbv_alpha_metric(_x, _y):
+            return _y[0, 0, 0, 0, 6]
+
+        def dbv_beta_metric(_x, _y):
+            return _y[0, 0, 0, 0, 7]
+
+        metrics = [oef_metric, dbv_metric, r2p_metric]
+        if self.config_dict['infer_inv_gamma']:
+            metrics.extend([oef_alpha_metric, oef_beta_metric, dbv_beta_metric, dbv_alpha_metric])
+        self.model.compile(optimiser, loss=[synth_loss, None, None],
+                           metrics=[metrics, None, None])
+
+        x, y = create_synthetic_dataset(self.system_params, self.config_dict['full_model'],
+                                        self.config_dict['use_blood'],
+                                        self.config_dict['misalign_prob'],
+                                        uniform_prop=self.config_dict['uniform_prop'])
+        synthetic_dataset, synthetic_validation = ModelTrainer.prepare_synthetic_dataset(x, y)
+        self.model.fit(synthetic_dataset, epochs=self.config_dict['no_pt_epochs'], validation_data=synthetic_validation,
+                       callbacks=[tf.keras.callbacks.TerminateOnNaN()])
+        self.model.save_weights(self.pt_model_weights)
+        # Delete these dataset objects to save space
+        del synthetic_dataset
+        del synthetic_validation
+
+        self.weight_status = WeightStatus.PRE_TRAINED
+
+    @staticmethod
+    def prepare_synthetic_dataset(x, y):
+        train_conv = True
+        # If we're building a convolutional model, reshape the synthetic data to look like images, note we only do
+        # 1x1x1 convs for pre-training
+        if train_conv:
+            # Reshape to being more image like for layer normalisation (if we use this)
+            x = np.reshape(x, (-1, 10, 10, 5, x.shape[-1]))
+            y = np.reshape(y, (-1, 10, 10, 5, 3))
+
+        # Separate into training/testing data
+        # Keep 10% for validation
+        no_examples = x.shape[0]
+        no_valid_examples = no_examples // 10
+        train_x = x[:-no_valid_examples, ...]
+        train_y = y[:-no_valid_examples, ...]
+        valid_x = x[-no_valid_examples:, ...]
+        valid_y = y[-no_valid_examples:, ...]
+
+        synthetic_dataset = tf.data.Dataset.from_tensor_slices((train_x, train_y))
+
+        synthetic_dataset = synthetic_dataset.shuffle(10000)
+        synthetic_dataset = synthetic_dataset.batch(512)
+        return synthetic_dataset, (valid_x, valid_y)
 
     def train_model(self):
-        params = self.get_params()
-        # final weights are trained on real data
-        final_model_weights = self.config_dict['save_directory'] + '/final_model.h5'
-        # pre-trained weights    are trained on synthetic data
-        pt_model_weights = self.config_dict['save_directory'] + '/pt_model.h5'
-        model, inner_model, trainer = self.create_encoder_model(self.config_dict, params)
+        if not os.path.isdir(self.save_dir):
+            os.mkdir(self.save_dir)
 
-        if os.path.isfile(pt_model_weights):
-            model.load_weights(pt_model_weights)
-        else:
-            print('Model has not been built: the weights file does not exist under /optimal/pt_model.h5')
+        if self.weight_status == WeightStatus.NOT_TRAINED:
+            self.train_on_synthetic_data()
+            print('saved', self.pt_model_weights)
 
-        no_taus = len(np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step'])))
-        input_3d = keras.layers.Input((None, None, 8, no_taus))
-        input_mask = keras.layers.Input((None, None, 8, 1))
-        params['simulate_noise'] = 'False'
-        # Generate
-        sig_gen_layer = SignalGenerationLayer(params, self.config_dict['full_model'], self.config_dict['use_blood'])
+        if self.weight_status == WeightStatus.PRE_TRAINED:
+            no_taus = len(np.arange(float(self.system_params['tau_start']), float(self.system_params['tau_end']),
+                                    float(self.system_params['tau_step'])))
+            input_3d = keras.layers.Input((None, None, 8, no_taus))
+            input_mask = keras.layers.Input((None, None, 8, 1))
+            self.system_params['simulate_noise'] = 'False'
+            # Generate
+            sig_gen_layer = SignalGenerationLayer(self.system_params, self.config_dict['full_model'],
+                                                  self.config_dict['use_blood'])
 
-        full_model = trainer.build_fine_tuner(model, sig_gen_layer, input_3d, input_mask)
+            full_model = self.trainer.build_fine_tuner(self.model, sig_gen_layer, input_3d, input_mask)
 
-        data_directory = self.config_dict['d']
-        hyperv_dir = f'{data_directory}/hyperv_ase.npy'
-        hyperv_data = self.load_condition_data(hyperv_dir, False)
-        baseline_dir = f'{data_directory}/baseline_ase.npy'
-        baseline_data = self.load_condition_data(baseline_dir, False)
-        study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
-        study_dataset = self.prepare_dataset(study_data, model, 76, training=False)
+            data_directory = self.config_dict['d']
+            hyperv_dir = f'{data_directory}/hyperv_ase.npy'
+            hyperv_data = self.load_condition_data(hyperv_dir, False)
+            baseline_dir = f'{data_directory}/baseline_ase.npy'
+            baseline_data = self.load_condition_data(baseline_dir, False)
+            study_data = np.concatenate([hyperv_data, baseline_data], axis=0)
+            study_dataset = self.prepare_dataset(study_data, self.model, 76, training=False)
 
-        train_data = self.load_real_data()
-        train_dataset = self.prepare_dataset(train_data, model, self.config_dict['crop_size'])
+            train_data = self.load_real_data()
+            train_dataset = self.prepare_dataset(train_data, self.model, self.config_dict['crop_size'])
 
-        if os.path.isfile(final_model_weights):
-            model.load_weights(final_model_weights)
-        else:
-            self.train_full_model(trainer, full_model, study_dataset, train_dataset)
+            self.train_full_model(self.trainer, full_model, study_dataset, train_dataset)
 
-        trainer.estimate_population_param_distribution(model, baseline_data)
+            self.trainer.estimate_population_param_distribution(self.model, baseline_data)
 
-        if (self.config_dict['save_directory'] is not None) and (os.path.isfile(final_model_weights) is False):
-            if not os.path.exists(self.config_dict['save_directory']):
-                os.makedirs(self.config_dict['save_directory'])
-            model.save_weights(final_model_weights)
+            self.model.save_weights(self.final_model_weights)
 
-        del train_dataset
-        del study_dataset
-
+            del train_dataset
+            del study_dataset
 
     def load_real_data(self):
         if not os.path.exists(self.config_dict['d']):
@@ -146,6 +226,7 @@ class ModelTrainer(ModelBuilder):
     def train_full_model(self, trainer, full_model, study_dataset, train_dataset):
         assert isinstance(trainer, EncoderTrainer)
         config = self.config_dict
+
         class LRSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
             def __init__(self, initial_learning_rate):
                 self.initial_learning_rate = initial_learning_rate
@@ -157,7 +238,8 @@ class ModelTrainer(ModelBuilder):
                 c = tf.cast(const_until, x_recomp.dtype.base_dtype)
 
                 op = tf.cast(self.initial_learning_rate, tf.float32) * \
-                     tf.pow(tf.cast(0.9, tf.float32), tf.cast((1.0 + (x_recomp - c) / self.steps_per_epoch), tf.float32))
+                     tf.pow(tf.cast(0.9, tf.float32),
+                            tf.cast((1.0 + (x_recomp - c) / self.steps_per_epoch), tf.float32))
 
                 final_lr = self.initial_learning_rate / 1e2
                 linear_rate = (final_lr - self.initial_learning_rate) / (40.0 * self.steps_per_epoch - const_until)
@@ -185,8 +267,9 @@ class ModelTrainer(ModelBuilder):
             return tf.reduce_mean(p[:, :, :, :, -1:])
 
         class ELBOCallback(tf.keras.callbacks.Callback):
-            def __init__(self, dataset):
+            def __init__(self, dataset, config_dict):
                 self._iter = iter(dataset)
+                self.config_dict = config_dict
 
             def on_epoch_end(self, epoch, logs=None):
                 nll_total = 0.0
@@ -211,14 +294,14 @@ class ModelTrainer(ModelBuilder):
 
                 metrics = {'val_nll': nll,
                            'val_elbo': nll + kl,
-                           'val_elbo_smooth': nll + kl * kl_var + smoothness * config.smoothness_weight,
+                           'val_elbo_smooth': nll + kl * kl_var + smoothness * self.config_dict['smoothness_weight'],
                            'val_smoothness': smoothness,
-                           'val_smoothness_scaled': smoothness * config.smoothness_weight,
+                           'val_smoothness_scaled': smoothness * self.config_dict['smoothness_weight'],
                            'val_kl': kl}
+                if self.config_dict['wandb_project'] != '':
+                    wandb.log(metrics)
 
-                wandb.log(metrics)
-
-        elbo_callback = ELBOCallback(study_dataset)
+        elbo_callback = ELBOCallback(study_dataset, self.config_dict)
 
         def smoothness_metric(x, y):
             return trainer.smoothness_loss(x, y)
@@ -234,5 +317,21 @@ class ModelTrainer(ModelBuilder):
                                  'predictions': predictions_loss},
                            metrics={'predictions': [smoothness_metric, kl_metric],
                                     'predicted_images': sigma_metric})
-        callbacks = [WandbCallback(), elbo_callback, tf.keras.callbacks.TerminateOnNaN()]
+        callbacks = [elbo_callback, tf.keras.callbacks.TerminateOnNaN()]
+        if self.config_dict['wandb_project'] != '':
+            callbacks.append(WandbCallback())
         full_model.fit(train_dataset, steps_per_epoch=100, epochs=self.config_dict['no_ft_epochs'], callbacks=callbacks)
+
+
+if __name__ == '__main__':
+    from utils import load_arguments
+
+    yaml_file = None
+    tau_start = None
+    tau_step = None
+    tau_end = None
+    # If we have a single argument and it's a yaml file, read the config from there
+    args = load_arguments()
+    print(args)
+    model_trainer = ModelTrainer(args)
+    model_trainer.train_model()
