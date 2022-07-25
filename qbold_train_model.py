@@ -332,6 +332,6 @@ if __name__ == '__main__':
     tau_end = None
     # If we have a single argument and it's a yaml file, read the config from there
     args = load_arguments()
-    print(args)
+
     model_trainer = ModelTrainer(args)
     model_trainer.train_model()
