@@ -34,6 +34,8 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._taus = tf.range(float(system_parameters['tau_start']), float(system_parameters['tau_end']),
                               float(system_parameters['tau_step']), dtype=tf.float32)
 
+        self._taus = tf.constant(np.array([0.000, 0.016, 0.020, 0.024, 0.028, 0.032, 0.036, 0.040, 0.044, 0.048, 0.052, 0.056, 0.060]), dtype=tf.float32)
+
         self._tr = float(system_parameters['tr'])
         self._ti = float(system_parameters['ti'])
         self._t1b = float(system_parameters['t1b'])
@@ -117,8 +119,8 @@ class SignalGenerationLayer(keras.layers.Layer):
             if signal.shape[-1] == 11:
                 # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
                 norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
-            elif signal.shape[-1] == 24:
-                norm_snr = 1.0-(np.abs(np.arange(-0.028, 0.065, 0.004))*3.0)
+            else:#if signal.shape[-1] == 24:
+                norm_snr = 1.0-(np.abs(self._taus)*3.0)
 
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
             snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, signal.shape[-1]))

@@ -3,7 +3,7 @@ import argparse
 
 def setup_argparser(defaults_dict):
     parser = argparse.ArgumentParser(description='Train neural network for parameter estimation')
-    parser.add_argument('-d', default='/home/data/qbold/', help='path to the real data directory')
+    parser.add_argument('-d', default='/home/data/qbold/74/', help='path to the real data directory')
     parser.add_argument('-f', default='synthetic_data.npz', help='path to synthetic data file')
     parser.add_argument('--no_units', type=int, default=defaults_dict['no_units'])
     parser.add_argument('--no_pt_epochs', type=int, default=defaults_dict['no_pt_epochs'])

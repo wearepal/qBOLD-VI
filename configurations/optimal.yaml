@@ -1,8 +1,8 @@
 no_units: 60
 no_intermediate_layers: 2
-student_t_df: 200  # Switching to None will use a Gaussian error distribution
-pt_lr: 2e-3
-ft_lr: 5e-3
+student_t_df: 100  # Switching to None will use a Gaussian error distribution
+pt_lr: 1e-3
+ft_lr: 1e-3
 kl_weight: 1.0
 smoothness_weight: 5.0
 dropout_rate: 0.0
@@ -27,6 +27,6 @@ gate_offset: -3.0
 resid_init_std: 0.05
 use_mvg: True
 uniform_prop: 0.0
-adamw_decay: 2e-4
-pt_adamw_decay: 2e-4
+adamw_decay: 1e-3
+pt_adamw_decay: 1e-2
 predict_log_data: False

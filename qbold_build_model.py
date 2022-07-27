@@ -75,7 +75,7 @@ class ModelBuilder:
                                  use_mvg=config_dict['use_mvg'],
                                  predict_log_data=config_dict['predict_log_data']
                                  )
-        taus = np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
+        taus = np.array([0.000, 0.016, 0.020, 0.024, 0.028, 0.032, 0.036, 0.040, 0.044, 0.048, 0.052, 0.056, 0.060])#np.arange(float(params['tau_start']), float(params['tau_end']), float(params['tau_step']))
         model, inner_model = trainer.create_encoder(gate_offset=config_dict['gate_offset'],
                                                     resid_init_std=config_dict['resid_init_std'],
                                                     no_ip_images=len(taus))

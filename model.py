@@ -92,7 +92,7 @@ class EncoderTrainer:
         self._heteroscedastic_noise = heteroscedastic_noise
         self._predict_log_data = predict_log_data
         # Store the spin-echo index
-        self._se_idx = int(abs(float(system_params['tau_start'])/float(system_params['tau_step'])))
+        self._se_idx = 0#int(abs(float(system_params['tau_start'])/float(system_params['tau_step'])))
 
     def normalise_data(self, _data):
         # Do the normalisation as part of the model rather than as pre-processing

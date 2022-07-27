@@ -117,8 +117,9 @@ class ModelTrainer(ModelBuilder):
         if self.weight_status == WeightStatus.PRE_TRAINED:
             no_taus = len(np.arange(float(self.system_params['tau_start']), float(self.system_params['tau_end']),
                                     float(self.system_params['tau_step'])))
-            input_3d = keras.layers.Input((None, None, 8, no_taus))
-            input_mask = keras.layers.Input((None, None, 8, 1))
+            no_taus = 13
+            input_3d = keras.layers.Input((None, None, None, no_taus))
+            input_mask = keras.layers.Input((None, None, None, 1))
             self.system_params['simulate_noise'] = 'False'
             # Generate
             sig_gen_layer = SignalGenerationLayer(self.system_params, self.config_dict['full_model'],
@@ -152,11 +153,14 @@ class ModelTrainer(ModelBuilder):
 
         data_directory = self.config_dict['d']
         # Load real data for fine-tuning, using the model trained on synthetic data for priors
-        ase_data = np.load(f'{data_directory}/ASE_scan.npy')
-        ase_inf_data = np.load(f'{data_directory}/ASE_INF.npy')
-        ase_sup_data = np.load(f'{data_directory}/ASE_SUP.npy')
+        ase_data = np.load(f'{data_directory}/baseline_ase.npy')
+        ase_inf_data = np.load(f'{data_directory}/hyperv_ase.npy')
 
-        return np.concatenate([ase_data, ase_inf_data, ase_sup_data], axis=0)
+        ase_data = self.load_condition_data(f'{data_directory}/baseline_ase.npy', False)
+        ase_inf_data = self.load_condition_data(f'{data_directory}/hyperv_ase.npy', False)
+       #ase_sup_data = np.load(f'{data_directory}/ASE_SUP.npy')
+
+        return np.concatenate([ase_data, ase_inf_data], axis=0)#[:, :, :, :, :-1]
 
     def load_condition_data(self, condition_dir, with_brain_mask):
         condition_data = np.load(condition_dir)
@@ -216,8 +220,8 @@ class ModelTrainer(ModelBuilder):
         real_dataset = real_dataset.map(map_func2)
         real_dataset = real_dataset.repeat(-1)
         if training:
-            real_dataset = real_dataset.shuffle(10000)
-            real_dataset = real_dataset.batch(38, drop_remainder=True)
+            real_dataset = real_dataset.shuffle(100)
+            real_dataset = real_dataset.batch(10, drop_remainder=True)
         else:
             real_dataset = real_dataset.batch(3, drop_remainder=True)
 
