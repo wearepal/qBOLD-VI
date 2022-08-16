@@ -117,7 +117,7 @@ class ModelTrainer(ModelBuilder):
         if self.weight_status == WeightStatus.PRE_TRAINED:
             no_taus = len(np.arange(float(self.system_params['tau_start']), float(self.system_params['tau_end']),
                                     float(self.system_params['tau_step'])))
-            no_taus = 13
+            no_taus = 11
             input_3d = keras.layers.Input((None, None, None, no_taus))
             input_mask = keras.layers.Input((None, None, None, 1))
             self.system_params['simulate_noise'] = 'False'
@@ -158,12 +158,15 @@ class ModelTrainer(ModelBuilder):
 
         ase_data = self.load_condition_data(f'{data_directory}/baseline_ase.npy', False)
         ase_inf_data = self.load_condition_data(f'{data_directory}/hyperv_ase.npy', False)
-       #ase_sup_data = np.load(f'{data_directory}/ASE_SUP.npy')
+        #ase_sup_data = np.load(f'{data_directory}/ASE_SUP.npy')
 
-        return np.concatenate([ase_data, ase_inf_data], axis=0)#[:, :, :, :, :-1]
+        combined_data = np.concatenate([ase_data, ase_inf_data], axis=0) #[:, :, :, :, :-1]
+
+        return combined_data
 
     def load_condition_data(self, condition_dir, with_brain_mask):
         condition_data = np.load(condition_dir)
+        condition_data = np.concatenate([condition_data[:, :, :, :, :11], condition_data[:, :, :, :, 13:]], -1)
         condition_with_brain_mask = np.concatenate(
             [condition_data[:, :, :, :, :-2], condition_data[:, :, :, :, -1:]], -1)
         if with_brain_mask:

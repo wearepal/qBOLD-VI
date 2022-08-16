@@ -1,6 +1,6 @@
 no_units: 60
 no_intermediate_layers: 2
-student_t_df: 100  # Switching to None will use a Gaussian error distribution
+student_t_df: 30  # Switching to None will use a Gaussian error distribution
 pt_lr: 1e-3
 ft_lr: 1e-3
 kl_weight: 1.0
@@ -18,8 +18,8 @@ full_model: True
 use_blood: True
 misalign_prob: 0.0
 use_population_prior: False
-save_directory: optimal
-name: optimal
+save_directory: optimal_52_t30_sig_snr10
+name: optimal_52_t30_sig_snr10
 inv_gamma_alpha: 0.0
 inv_gamma_beta: 0.0
 channelwise_gating: True

@@ -210,8 +210,8 @@ class EncoderTrainer:
         # Predict heteroscedastic variances
         im_sigma_layer = keras.layers.Conv3D(no_ip_images, kernel_size=(1, 1, 1),
                                              kernel_initializer=tf.keras.initializers.RandomNormal(stddev=resid_init_std),
-                                             bias_initializer=tf.keras.initializers.Constant(np.log(self._initial_im_sigma)),
-                                             activation=tf.exp)
+                                             bias_initializer=tf.keras.initializers.Constant(logit(self._initial_im_sigma)),
+                                             activation=tf.sigmoid)
 
         # Create the inner model with two outputs, one with 3x3 convs for fine-tuning, and one without.
         inner_model = keras.Model(inputs=[after_first_conv_input], outputs=[output, second_net, net2])
@@ -555,7 +555,7 @@ class EncoderTrainer:
 
         # Optionally use a student-t distribution (with heavy tails) or a Gaussian distribution if dof >= 50
         if self._student_t_df is not None and self._student_t_df < 50:
-            dist = tfp.distributions.StudentT(df=self._student_t_df, loc=0.0, scale=sigma)
+            dist = tfp.distributions.StudentT(df=self._student_t_df, loc=0.0, scale=(sigma+1e-4))
             nll = -dist.log_prob(residual)
         else:
             nll = -(-tf.math.log(sigma) - np.log(np.sqrt(2.0 * np.pi)) - 0.5 * tf.square(residual / sigma))

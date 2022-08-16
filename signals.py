@@ -34,7 +34,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         self._taus = tf.range(float(system_parameters['tau_start']), float(system_parameters['tau_end']),
                               float(system_parameters['tau_step']), dtype=tf.float32)
 
-        self._taus = tf.constant(np.array([0.000, 0.016, 0.020, 0.024, 0.028, 0.032, 0.036, 0.040, 0.044, 0.048, 0.052, 0.056, 0.060]), dtype=tf.float32)
+        self._taus = tf.constant(np.array([0.000, 0.016, 0.020, 0.024, 0.028, 0.032, 0.036, 0.040, 0.044, 0.048, 0.052]), dtype=tf.float32)
 
         self._tr = float(system_parameters['tr'])
         self._ti = float(system_parameters['ti'])
@@ -123,7 +123,7 @@ class SignalGenerationLayer(keras.layers.Layer):
                 norm_snr = 1.0-(np.abs(self._taus)*3.0)
 
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
-            snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, signal.shape[-1]))
+            snr = tf.random.uniform((signal.shape[0], 1), 10, 120) * tf.reshape(norm_snr, (1, signal.shape[-1]))
             # Calculate the mean signal for each tau value and divie by the snr to get the std-dev
             std_dev = tf.reduce_mean(signal, 0, keepdims=True) / snr
             # Add noise at the correct level
