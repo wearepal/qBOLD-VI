@@ -3,8 +3,9 @@ This codebase provides a method for learning an amortized variational inference 
 
 The code is arranged such that:
 * signals.py generates the synthetic data, and contains the forward model for the observed qBOLD data.
-* model.py: Contains all of the machine learning model specification. 
-* train.py: Contains the functionality to train the model, requires a .yaml configuration file as input 
+* build_model.py: Contains all of the machine learning model specification. 
+* train_model.py: Contains the functionality to train the model, requires a .yaml configuration file as input
+* logit_norm_dist.py: The logit normal distribution classes (both uncorrelated and correlated)
 * data_preprocessing.py, pre-processes the qBOLD images into numpy arrays. This will need to be adapted to new datasets.
 
 Please note that I am currently refactoring this code to decouple some elements of the model, particularly the logit-Normal distribution. Please get in touch if you find any issues.
@@ -17,3 +18,16 @@ The hyper-parameters are specified in YAML files, an example using the optimal c
 configurations/optimal.yaml
 
 The model is described in the preprint "Flexible Amortized Variational Inference in qBOLD MRI" here [https://arxiv.org/abs/2203.05845](https://arxiv.org/abs/2203.05845)
+
+
+# Install instructions
+Check the [TensorFlow](https://www.tensorflow.org/install) install instructions to preinstall the latest version
+```
+pip install --upgrade pip
+pip install -r requirements.tx
+```
+
+To train a model using the configuration file given in configurations/optimal.yaml
+```
+python train_model.py configurations/optimal.yaml
+```
