@@ -9,7 +9,7 @@ import tensorflow_addons as tfa
 import wandb
 from wandb.keras import WandbCallback
 
-from qbold_build_model import ModelBuilder, WeightStatus
+from build_model import ModelBuilder, WeightStatus
 from signals import SignalGenerationLayer
 
 
@@ -36,9 +36,9 @@ class ModelTrainer(ModelBuilder):
             optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22 * 40, average_period=22)
 
         def synth_loss(_x, _y):
-            return self.trainer.synthetic_data_loss(_x, _y, self.config_dict['use_r2p_loss'],
-                                                    self.config_dict['inv_gamma_alpha'],
-                                                    self.config_dict['inv_gamma_beta'])
+            return self.trainer.synthetic_data_loss(_x, _y, self.config_dict['use_r2p_loss'])
+                    # old arguments
+                    #self.config_dict['inv_gamma_alpha'],self.config_dict['inv_gamma_beta'])
 
         def oef_metric(_x, _y):
             return self.trainer.oef_metric(_x, _y)
@@ -324,7 +324,7 @@ class ModelTrainer(ModelBuilder):
 
 
 if __name__ == '__main__':
-    from utils import load_arguments
+    from parser import load_arguments
 
     yaml_file = None
     tau_start = None
