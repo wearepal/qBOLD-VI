@@ -20,9 +20,9 @@ class ModelTrainer(ModelBuilder):
         np.random.seed(1)
 
         if self.config_dict['wandb_project'] != '':
-            wandb.init(project=self.config_dict.wandb_project)
-            if self.config_dict.get('name') is None:
-                wandb.run.name = args['name']
+            wandb.init(project=self.config_dict['wandb_project'])
+            if self.config_dict.get('name') is not None:
+                wandb.run.name = self.config_dict.get('name')
 
     def train_on_synthetic_data(self):
         from signals import create_synthetic_dataset
