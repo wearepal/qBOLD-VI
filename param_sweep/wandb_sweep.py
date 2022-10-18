@@ -5,7 +5,7 @@ import sys
 import yaml
 import tensorflow as tf
 import numpy as np
-from train import  setup_argparser, get_defaults, train_model
+from param_sweep.train import  setup_argparser, get_defaults, train_model
 import wandb
 
 if __name__ == '__main__':

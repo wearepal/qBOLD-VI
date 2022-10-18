@@ -385,8 +385,7 @@ def create_and_train_on_synthetic_data(config_dict, params):
         optimiser = tfa.optimizers.SWA(optimiser, start_averaging=22 * 40, average_period=22)
     if True:  # not config_dict.use_population_prior:
         def synth_loss(x, y):
-            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss, config_dict.inv_gamma_alpha,
-                                               config_dict.inv_gamma_beta)
+            return trainer.synthetic_data_loss(x, y, config_dict.use_r2p_loss)
 
         def oef_metric(x, y):
             return trainer.oef_metric(x, y)
@@ -454,6 +453,8 @@ def create_encoder_model(config_dict, params):
 if __name__ == '__main__':
     import sys
     import yaml
+
+    raise NotImplementedError('Make this consistent with train_model.py code')
 
     tf.random.set_seed(1)
     np.random.seed(1)
