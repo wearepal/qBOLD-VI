@@ -1,15 +1,15 @@
 # Author: Ivor Simpson, University of Sussex (i.simpson@sussex.ac.uk)
 # Purpose: Code for preparing real data for further analysis
-import nibabel as nib
-import numpy as np
 from glob import glob
 from os import system
+
+import nibabel as nib
+import numpy as np
+
 data_dir = '/Users/is321/Documents/Data/qBold/hyperv_data/'
 
 
 def estimate_noise_level():
-    import matplotlib.pyplot as plt
-
     subjects = ['CISC17352', 'CISC17543', 'CISC17987', 'CISC19890', 'CISC19950', 'CISC20384']
     basenames = ['baseline_ase', 'hyperv_ase']
     norm_snr_list = []

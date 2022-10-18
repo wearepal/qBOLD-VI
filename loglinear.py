@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
-from tqdm import tqdm
-
-import numpy as np
-from sklearn.linear_model import LinearRegression
 import argparse
 import configparser
-import nibabel as nib
 import os
+
+import nibabel as nib
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from tqdm import tqdm
 
 
 def save_predictions(predictions, filename, transform_directory):

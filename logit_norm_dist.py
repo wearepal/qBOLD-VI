@@ -1,10 +1,11 @@
 # Author: Ivor Simpson, University of Sussex (i.simpson@sussex.ac.uk)
 # Purpose: Contains logit Normal distribution
 
+import math
+
+import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
-import math
-import numpy as np
 from tensorflow import keras
 
 

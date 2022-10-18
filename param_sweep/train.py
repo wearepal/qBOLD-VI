@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 
 
-from signals import SignalGenerationLayer, create_synthetic_dataset
-
-import os
-import numpy as np
 import argparse
 import configparser
-from model import EncoderTrainer
+import os
+
+import numpy as np
 import tensorflow as tf
-from tensorflow import keras
 import tensorflow_addons as tfa
 import wandb
+from tensorflow import keras
 from wandb.keras import WandbCallback
+
+from model import EncoderTrainer
+from signals import SignalGenerationLayer, create_synthetic_dataset
+
 
 def prepare_dataset(real_data, model, crop_size=20, training=True, blank_crop=True):
     if blank_crop:
@@ -451,8 +453,6 @@ def create_encoder_model(config_dict, params):
 
 
 if __name__ == '__main__':
-    import sys
-    import yaml
 
     raise NotImplementedError('Make this consistent with train_model.py code')
 

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
+import argparse
+import configparser
 import math
 
 import numpy as np
-import argparse
-import configparser
-
 import tensorflow as tf
 
 keras = tf.keras
@@ -118,7 +117,7 @@ class SignalGenerationLayer(keras.layers.Layer):
                 # Normalised SNRs are given from real data, and calculated with respect to the tau=0 image
                 norm_snr = np.array([0.985, 1.00, 1.01, 1., 0.97, 0.95, 0.93, 0.90, 0.86, 0.83, 0.79], dtype=np.float32)
             elif signal.shape[-1] == 24:
-                norm_snr = 1.0-(np.abs(np.arange(-0.028, 0.065, 0.004))*3.0)
+                norm_snr = 1.0 - (np.abs(np.arange(-0.028, 0.065, 0.004)) * 3.0)
 
             # The actual SNR varies between 60-120, but I've increased the range for more diversity
             snr = tf.random.uniform((signal.shape[0], 1), 50, 120) * tf.reshape(norm_snr, (1, signal.shape[-1]))
@@ -134,7 +133,7 @@ class SignalGenerationLayer(keras.layers.Layer):
         """
 
         # The predicted signal should have the original shape with len(self.taus) for the final dimension
-        new_shape = tf.concat([original_shape[0:-1], [len(self._taus)]],0)
+        new_shape = tf.concat([original_shape[0:-1], [len(self._taus)]], 0)
         signal = tf.reshape(signal, new_shape)
 
         return signal
@@ -220,7 +219,7 @@ class SignalGenerationLayer(keras.layers.Layer):
             td = 0.0045067
             # Why is the 4pi missing from the squared term here? Missing in cherukara code as well. Also not clear where
             # the 0.14e-6 comes from...
-            g0 = (4 / 45) * hct * (1 - hct) * ( self._b0 * (self._dchi * oef + 0.14e-6)) ** 2
+            g0 = (4 / 45) * hct * (1 - hct) * (self._b0 * (self._dchi * oef + 0.14e-6)) ** 2
 
             signals = tf.math.exp(-r2b * self._te) * tf.math.exp(- (0.5 * (self._gamma ** 2) * g0 * (td ** 2)) *
                                                                  ((self._te / td) + tf.math.sqrt(
@@ -232,8 +231,8 @@ class SignalGenerationLayer(keras.layers.Layer):
         # Cherukara maths
         if True:
             # Constants taken from Berman et al. 2018
-            r2b = 1.0/0.189
-            td = (2.6**2.0)/2.0
+            r2b = 1.0 / 0.189
+            td = (2.6 ** 2.0) / 2.0
             # Convert to seconds
             td = td * 1e-3
             g0 = (4 / 45) * hct * (1 - hct) * (4.0 * math.pi * self._b0 * self._dchi * oef) ** 2
@@ -252,10 +251,11 @@ def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, var
     import tensorflow_probability as tfp
     sig_layer = SignalGenerationLayer(params, full_model, use_blood, misaligned_prob=misaligned_prob,
                                       variable_hct=variable_hct)
-    oefs = tf.random.uniform((round(int(params['sample_size'])*uniform_prop),), minval=float(params['oef_start']),
+    oefs = tf.random.uniform((round(int(params['sample_size']) * uniform_prop),), minval=float(params['oef_start']),
                              maxval=float(params['oef_end']))
 
-    oefs_n = tf.random.normal((round(int(params['sample_size'])*(1.0-uniform_prop)),)) * float(params['oef_std']) + float(params['oef_mean'])
+    oefs_n = tf.random.normal((round(int(params['sample_size']) * (1.0 - uniform_prop)),)) * float(
+        params['oef_std']) + float(params['oef_mean'])
     oefs_n = tf.clip_by_value(oefs_n, float(params['oef_start']), float(params['oef_end']))
     oefs = tf.concat([oefs, oefs_n], 0)
 
@@ -264,7 +264,7 @@ def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, var
 
     dbvs_n = tf.cast(tfp.distributions.TruncatedNormal(loc=float(params['dbv_mean']), scale=float(params['dbv_std']),
                                                        low=float(params['dbv_start']), high=float(params['dbv_end'])).
-                     sample((round(int(params['sample_size'])*(1.0-uniform_prop)),)), tf.float32)
+                     sample((round(int(params['sample_size']) * (1.0 - uniform_prop)),)), tf.float32)
     dbvs = tf.concat([dbvs, dbvs_n], 0)
 
     xx, yy = tf.meshgrid(oefs, dbvs, indexing='ij')
@@ -298,6 +298,7 @@ def create_synthetic_dataset(params, full_model, use_blood, misaligned_prob, var
     # Concatenate the R2'
     train_y = tf.concat([train_y[:, :2], tf.expand_dims(r2p, -1)], -1)
     return train_x, train_y
+
 
 if __name__ == '__main__':
     config = configparser.ConfigParser()

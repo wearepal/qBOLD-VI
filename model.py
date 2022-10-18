@@ -1,11 +1,12 @@
 # Author: Ivor Simpson, University of Sussex (i.simpson@sussex.ac.uk)
 # Purpose: Store the model code
 
-import tensorflow as tf
-from tensorflow import keras
-import tensorflow_probability as tfp
-from logit_norm_dist import LogitMVN, LogitN, ReparamTrickLayer
 import numpy as np
+import tensorflow as tf
+import tensorflow_probability as tfp
+from tensorflow import keras
+
+from logit_norm_dist import LogitMVN, LogitN, ReparamTrickLayer
 
 
 class EncoderTrainer:
@@ -348,14 +349,14 @@ class EncoderTrainer:
         # Normalise and mask the predictions/real data
         if self._multi_image_normalisation:
             y_true = y_true / (
-                        tf.reduce_mean(y_true[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
+                    tf.reduce_mean(y_true[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
             y_pred = y_pred / (
-                        tf.reduce_mean(y_pred[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
+                    tf.reduce_mean(y_pred[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
         else:
             y_true = y_true / (
-                        tf.reduce_mean(y_true[:, :, :, :, self._se_idx:self._se_idx + 1], -1, keepdims=True) + 1e-3)
+                    tf.reduce_mean(y_true[:, :, :, :, self._se_idx:self._se_idx + 1], -1, keepdims=True) + 1e-3)
             y_pred = y_pred / (
-                        tf.reduce_mean(y_pred[:, :, :, :, self._se_idx:self._se_idx + 1], -1, keepdims=True) + 1e-3)
+                    tf.reduce_mean(y_pred[:, :, :, :, self._se_idx:self._se_idx + 1], -1, keepdims=True) + 1e-3)
 
         if self._predict_log_data:
             y_true = tf.where(mask > 0, tf.math.log(y_true), tf.zeros_like(y_true))
@@ -500,9 +501,9 @@ class EncoderTrainer:
             y_pred = y_pred[:, :, :, :, :y_true.shape[-1]]
             if self._multi_image_normalisation:
                 y_true = y_true / (
-                            np.mean(y_true[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
+                        np.mean(y_true[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
                 y_pred = y_pred / (
-                            np.mean(y_pred[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
+                        np.mean(y_pred[:, :, :, :, self._se_idx - 1:self._se_idx + 2], -1, keepdims=True) + 1e-3)
             else:
                 y_true = y_true / (np.mean(y_true[:, :, :, :, self._se_idx:self._se_idx + 1], -1, keepdims=True) + 1e-3)
                 y_pred = y_pred / (np.mean(y_pred[:, :, :, :, self._se_idx:self._se_idx + 1], -1, keepdims=True) + 1e-3)

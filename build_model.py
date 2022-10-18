@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
-import os
-import numpy as np
 import configparser
-from model import EncoderTrainer
-
+import os
 from enum import Enum
+
+import numpy as np
+
+from model import EncoderTrainer
 
 
 class WeightStatus(Enum):

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 
 import os
+
 import numpy as np
-from model import EncoderTrainer
 import tensorflow as tf
-from tensorflow import keras
 import tensorflow_addons as tfa
 import wandb
+from tensorflow import keras
 from wandb.keras import WandbCallback
 
 from build_model import ModelBuilder, WeightStatus
+from model import EncoderTrainer
 from signals import SignalGenerationLayer
 
 
@@ -37,8 +38,8 @@ class ModelTrainer(ModelBuilder):
 
         def synth_loss(_x, _y):
             return self.trainer.synthetic_data_loss(_x, _y, self.config_dict['use_r2p_loss'])
-                    # old arguments
-                    #self.config_dict['inv_gamma_alpha'],self.config_dict['inv_gamma_beta'])
+            # old arguments
+            # self.config_dict['inv_gamma_alpha'],self.config_dict['inv_gamma_beta'])
 
         def oef_metric(_x, _y):
             return self.trainer.oef_metric(_x, _y)

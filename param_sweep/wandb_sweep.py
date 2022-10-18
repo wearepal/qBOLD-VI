@@ -2,11 +2,13 @@
 # Purpose: #Enter feature name here
 
 import sys
-import yaml
-import tensorflow as tf
+
 import numpy as np
-from param_sweep.train import  setup_argparser, get_defaults, train_model
+import tensorflow as tf
 import wandb
+import yaml
+
+from param_sweep.train import setup_argparser, get_defaults, train_model
 
 if __name__ == '__main__':
     tf.random.set_seed(1)
